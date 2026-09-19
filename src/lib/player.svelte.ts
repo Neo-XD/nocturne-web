@@ -1,0 +1,1617 @@
+// Shared reactive app state (playback + auth), set up ONCE by the root layout. Components import
+// `playback`/`auth` and read them reactively; the Rust side drives them via Tauri events.
+// context/11 UI contract — this module only calls commands / subscribes to events.
+import { browser } from '$app/environment';
+import * as api from './api';
+import type {
+	Account,
+	AccountIdentity,
+	BrowseItem,
+	NowPlaying,
+	QueueState,
+	Rating,
+	SongItem
+} from './api';
+import { applyLtState, lt } from './lt.svelte';
+import { clearCached } from './pagecache';
+import * as pl from './personal';
+import type { Personal } from './personal';
+import { appearance } from './theme.svelte';
+import { thumb } from './thumb';
+import { showDesktopFeature } from './desktopModal.svelte';
+
+export const playback = $state({
+	now: null as NowPlaying | null,
+	queue: { items: [], currentIndex: 0 } as QueueState,
+	paused: false,
+	position: 0,
+	/** `performance.now()` when `position` last arrived. Ticks land at ~4 Hz, so `position` on its
+	 *  own is a sample up to 250 ms old; anything that has to line up with the audio *right now*
+	 *  (the player view's music video) extrapolates from this instead of trusting it directly. */
+	positionAt: 0,
+	duration: 0,
+	volume: 100,
+	// Tempo + pitch ("Advanced"). Frontend-owned because nothing persists them: mpv starts at
+	// 1.0 / 0 every launch and so does this, so the two can't drift apart.
+	speed: 1,
+	semitones: 0,
+	// Rating of the current track — seeded from its real `likeStatus` on each change, then
+	// optimistic on toggle. Owned here rather than in `ratings` below because the mini player is a
+	// separate webview with its own module instance: the backend reseed is what keeps them agreeing.
+	rating: 'indifferent' as Rating
+});
+
+/**
+ * `open` is the full-window now-playing view (NowPlaying.svelte): big artwork, plus the
+ * Queue/Lyrics tabs. `sidebarOpen` is the docked panel beside the page. Both can be true at once:
+ * the layout renders the sidebar only while `!open`, so the full view hides it rather than closing
+ * it, and dismissing the full view brings it back.
+ * This lives here rather than in the layout because starting something playing opens it, and every
+ * "play this" path already goes through this module. The open has to happen at the click: a
+ * gapless advance looks exactly like a user play from the `now-playing` event alone.
+ * `sidebarOpen` starts false so the auto-open preference decides the first one, not this default.
+ */
+export const np = $state({
+	open: false,
+	sidebarOpen: true,
+	fullscreenOpen: false,
+	devicesOpen: false,
+	tab: 'queue' as 'queue' | 'lyrics'
+});
+
+export const toggleDevicesSidebar = () => {
+	np.devicesOpen = !np.devicesOpen;
+	if (np.devicesOpen) {
+		np.sidebarOpen = false;
+		np.open = false;
+	}
+};
+
+export type FloatingSidebarMode = 'both' | 'left' | 'right' | 'none';
+
+function getInitialFloatingMode(): FloatingSidebarMode {
+	if (!browser) return 'both';
+	const savedMode = localStorage.getItem('floating_sidebar_mode') as FloatingSidebarMode | null;
+	if (savedMode && ['both', 'left', 'right', 'none'].includes(savedMode)) {
+		return savedMode;
+	}
+	const legacy = localStorage.getItem('floating_sidebar');
+	if (legacy === 'false') return 'none';
+	return 'both';
+}
+
+export type LyricsAnimationStyle =
+	| 'wave'
+	| 'apple'
+	| 'karaoke'
+	| 'glow'
+	| 'slide'
+	| 'fade'
+	| 'og'
+	| 'none';
+
+export interface LyricsAnimationOption {
+	id: LyricsAnimationStyle;
+	label: string;
+	description: string;
+}
+
+export const LYRICS_ANIMATION_OPTIONS: LyricsAnimationOption[] = [
+	{
+		id: 'wave',
+		label: 'Fluid Wave',
+		description: 'Nocturne signature: distance blur, soft linger, scale lift, and feathered wave sweep'
+	},
+	{
+		id: 'apple',
+		label: 'Apple Music',
+		description: 'Smooth cubic word fill, warm white illumination, and subtle letter pop'
+	},
+	{
+		id: 'karaoke',
+		label: 'Karaoke',
+		description: 'High-contrast wipe in theme accent with sharp leading edge and no blur'
+	},
+	{
+		id: 'glow',
+		label: 'Luminous Glow',
+		description: 'Pulsating text glow aura blooming across active syllables and phrases'
+	},
+	{
+		id: 'slide',
+		label: 'Kinetic Slide',
+		description: 'Dynamic horizontal slide wipe with kinetic line translation'
+	},
+	{
+		id: 'fade',
+		label: 'Smooth Fade',
+		description: 'Gentle cubic alpha crossfade between words with pure calm typography'
+	},
+	{
+		id: 'og',
+		label: 'OG Nocturne',
+		description: 'Original classic Nocturne desktop: clean line highlight, subtle scale, no blur'
+	},
+	{
+		id: 'none',
+		label: 'Static / Off',
+		description: 'Instant binary highlight without blur, motion, or scaling effects'
+	}
+];
+
+const initialMode = getInitialFloatingMode();
+
+export const prefs = $state({
+	customizationMode: (browser ? (localStorage.getItem('customization_mode') as 'basic' | 'extreme') : null) || 'basic',
+	lyricsAnimationStyle: (browser ? (localStorage.getItem('lyrics_animation_style') as LyricsAnimationStyle) : null) || 'wave',
+	musicVideos: false,
+	filterExplicit: false,
+	animatedArtwork: true,
+	floatingSidebarMode: initialMode,
+	floatingSidebarLeft: initialMode === 'both' || initialMode === 'left',
+	floatingSidebarRight: initialMode === 'both' || initialMode === 'right',
+	floatingSidebar: initialMode !== 'none',
+	floatingTopBar: browser ? localStorage.getItem('floating_topbar') !== 'false' : true,
+	floatingPlayerBar: browser ? localStorage.getItem('floating_playerbar') !== 'false' : true,
+	showAudioQuality: browser ? localStorage.getItem('show_audio_quality') !== 'false' : true,
+	homeInSidebar: browser ? localStorage.getItem('home_in_sidebar') === 'true' : false,
+	waveformSeekbar: browser ? localStorage.getItem('waveform_seekbar') === 'true' : false,
+	audioStreamSource: (browser ? (localStorage.getItem('audio_stream_source') as 'ytm' | 'spotify') : null) || 'ytm',
+	listeningHistoryTarget: (browser ? (localStorage.getItem('listening_history_target') as 'both' | 'ytm' | 'spotify') : null) || 'both',
+	pcAudioRecognition: browser ? localStorage.getItem('pc_audio_recognition') !== 'false' : true,
+	visibleIcons: {
+		titlebar: {
+			navigation: browser ? localStorage.getItem('icon_tb_navigation') !== 'false' : true,
+			search: browser ? localStorage.getItem('icon_tb_search') !== 'false' : true,
+			openLink: browser ? localStorage.getItem('icon_tb_openLink') !== 'false' : true,
+			listenTogether: browser ? localStorage.getItem('icon_tb_listenTogether') !== 'false' : true,
+			discord: browser ? localStorage.getItem('icon_tb_discord') !== 'false' : true,
+			lastfm: browser ? localStorage.getItem('icon_tb_lastfm') !== 'false' : true,
+			miniPlayer: browser ? localStorage.getItem('icon_tb_miniPlayer') !== 'false' : true,
+			fullscreen: browser ? localStorage.getItem('icon_tb_fullscreen') !== 'false' : true,
+			mode: browser ? localStorage.getItem('icon_tb_mode') !== 'false' : true,
+			settings: browser ? localStorage.getItem('icon_tb_settings') !== 'false' : true,
+		},
+		playerbar: {
+			like: browser ? localStorage.getItem('icon_pb_like') !== 'false' : true,
+			shuffle: browser ? localStorage.getItem('icon_pb_shuffle') !== 'false' : true,
+			repeat: browser ? localStorage.getItem('icon_pb_repeat') !== 'false' : true,
+			volume: browser ? localStorage.getItem('icon_pb_volume') !== 'false' : true,
+			info: browser ? localStorage.getItem('icon_pb_info') !== 'false' : true,
+			miniPlayer: browser ? localStorage.getItem('icon_pb_miniPlayer') !== 'false' : true,
+			lyrics: browser ? localStorage.getItem('icon_pb_lyrics') !== 'false' : true,
+			queue: browser ? localStorage.getItem('icon_pb_queue') !== 'false' : true,
+			devices: browser ? localStorage.getItem('icon_pb_devices') !== 'false' : true,
+			fullscreen: browser ? localStorage.getItem('icon_pb_fullscreen') !== 'false' : true,
+		}
+	}
+});
+
+export function setFloatingSidebarLeft(enabled: boolean) {
+	prefs.floatingSidebarLeft = enabled;
+	if (prefs.floatingSidebarLeft && prefs.floatingSidebarRight) prefs.floatingSidebarMode = 'both';
+	else if (prefs.floatingSidebarLeft) prefs.floatingSidebarMode = 'left';
+	else if (prefs.floatingSidebarRight) prefs.floatingSidebarMode = 'right';
+	else prefs.floatingSidebarMode = 'none';
+	prefs.floatingSidebar = prefs.floatingSidebarLeft || prefs.floatingSidebarRight;
+	if (browser) {
+		localStorage.setItem('floating_sidebar_mode', prefs.floatingSidebarMode);
+		localStorage.setItem('floating_sidebar_left', enabled ? 'true' : 'false');
+		localStorage.setItem('floating_sidebar', prefs.floatingSidebar ? 'true' : 'false');
+	}
+}
+
+export function setFloatingSidebarRight(enabled: boolean) {
+	prefs.floatingSidebarRight = enabled;
+	if (prefs.floatingSidebarLeft && prefs.floatingSidebarRight) prefs.floatingSidebarMode = 'both';
+	else if (prefs.floatingSidebarLeft) prefs.floatingSidebarMode = 'left';
+	else if (prefs.floatingSidebarRight) prefs.floatingSidebarMode = 'right';
+	else prefs.floatingSidebarMode = 'none';
+	prefs.floatingSidebar = prefs.floatingSidebarLeft || prefs.floatingSidebarRight;
+	if (browser) {
+		localStorage.setItem('floating_sidebar_mode', prefs.floatingSidebarMode);
+		localStorage.setItem('floating_sidebar_right', enabled ? 'true' : 'false');
+		localStorage.setItem('floating_sidebar', prefs.floatingSidebar ? 'true' : 'false');
+	}
+}
+
+export function setFloatingPlayerBar(enabled: boolean) {
+	prefs.floatingPlayerBar = enabled;
+	if (browser) localStorage.setItem('floating_playerbar', enabled ? 'true' : 'false');
+}
+
+export function setShowAudioQuality(enabled: boolean) {
+	prefs.showAudioQuality = enabled;
+	if (browser) localStorage.setItem('show_audio_quality', enabled ? 'true' : 'false');
+}
+
+export function setWaveformSeekbar(enabled: boolean) {
+	prefs.waveformSeekbar = enabled;
+	if (browser) localStorage.setItem('waveform_seekbar', enabled ? 'true' : 'false');
+}
+
+export function setAudioStreamSource(source: 'ytm' | 'spotify') {
+	prefs.audioStreamSource = source;
+	if (browser) {
+		localStorage.setItem('audio_stream_source', source);
+		api.setSetting('audio_stream_source', source).catch(() => {});
+	}
+}
+
+export function setListeningHistoryTarget(target: 'both' | 'ytm' | 'spotify') {
+	prefs.listeningHistoryTarget = target;
+	if (browser) {
+		localStorage.setItem('listening_history_target', target);
+		api.setSetting('listening_history_target', target).catch(() => {});
+	}
+}
+
+export function setPcAudioRecognition(enabled: boolean) {
+	prefs.pcAudioRecognition = enabled;
+	if (browser) localStorage.setItem('pc_audio_recognition', enabled ? 'true' : 'false');
+}
+
+// --- Spotify Store & Sync Mode -------------------------------------------------------------
+export const spotify = $state<{
+	status: api.SpotifyAccountStatus;
+	syncMode: api.SpotifyPlaylistSyncMode;
+	playlists: api.SpotifyPlaylistSummary[];
+	loadingPlaylists: boolean;
+}>({
+	status: { linked: false },
+	syncMode: 'seperate',
+	playlists: [],
+	loadingPlaylists: false
+});
+
+export async function refreshSpotify() {
+	try {
+		const [st, mode] = await Promise.all([
+			api.spotifyStatus(),
+			api.spotifyGetSyncMode().catch(() => 'seperate' as const)
+		]);
+		spotify.status = st;
+		spotify.syncMode = mode;
+		if (st.linked) {
+			void loadSpotifyPlaylists();
+		} else {
+			spotify.playlists = [];
+		}
+	} catch {}
+}
+
+export async function setSpotifySyncMode(mode: api.SpotifyPlaylistSyncMode) {
+	try {
+		spotify.syncMode = mode;
+		await api.spotifySetSyncMode(mode);
+		toast.success(`Playlist mode set to ${mode}`);
+	} catch (e) {
+		toast.error(String(e));
+	}
+}
+
+export async function loadSpotifyPlaylists() {
+	if (!spotify.status.linked) return;
+	spotify.loadingPlaylists = true;
+	try {
+		spotify.playlists = await api.spotifyGetPlaylists();
+	} catch (e) {
+		console.warn('Failed to load Spotify playlists:', e);
+	} finally {
+		spotify.loadingPlaylists = false;
+	}
+}
+
+
+export function setLyricsAnimationStyle(style: LyricsAnimationStyle) {
+	prefs.lyricsAnimationStyle = style;
+	if (browser) localStorage.setItem('lyrics_animation_style', style);
+}
+
+export function setFloatingSidebarMode(mode: FloatingSidebarMode) {
+	prefs.floatingSidebarMode = mode;
+	prefs.floatingSidebarLeft = mode === 'both' || mode === 'left';
+	prefs.floatingSidebarRight = mode === 'both' || mode === 'right';
+	prefs.floatingSidebar = mode !== 'none';
+	if (browser) {
+		localStorage.setItem('floating_sidebar_mode', mode);
+		localStorage.setItem('floating_sidebar_left', prefs.floatingSidebarLeft ? 'true' : 'false');
+		localStorage.setItem('floating_sidebar_right', prefs.floatingSidebarRight ? 'true' : 'false');
+		localStorage.setItem('floating_sidebar', mode !== 'none' ? 'true' : 'false');
+	}
+}
+
+export function setFloatingSidebar(enabled: boolean) {
+	setFloatingSidebarMode(enabled ? 'both' : 'none');
+}
+
+export function setFloatingTopBar(enabled: boolean) {
+	prefs.floatingTopBar = enabled;
+	if (browser) localStorage.setItem('floating_topbar', enabled ? 'true' : 'false');
+}
+
+export function setHomeInSidebar(enabled: boolean) {
+	prefs.homeInSidebar = enabled;
+	if (browser) localStorage.setItem('home_in_sidebar', enabled ? 'true' : 'false');
+}
+
+export function setVisibleIcon(bar: 'titlebar' | 'playerbar', icon: string, visible: boolean) {
+	if (bar === 'titlebar' && icon in prefs.visibleIcons.titlebar) {
+		(prefs.visibleIcons.titlebar as Record<string, boolean>)[icon] = visible;
+		if (browser) localStorage.setItem(`icon_tb_${icon}`, visible ? 'true' : 'false');
+	} else if (bar === 'playerbar' && icon in prefs.visibleIcons.playerbar) {
+		(prefs.visibleIcons.playerbar as Record<string, boolean>)[icon] = visible;
+		if (browser) localStorage.setItem(`icon_pb_${icon}`, visible ? 'true' : 'false');
+	}
+}
+
+export function setAnimatedArtwork(enabled: boolean) {
+	prefs.animatedArtwork = enabled;
+	api.setSetting('animated_artwork', enabled ? 'true' : 'false').catch(() => {});
+}
+
+export function setCustomizationMode(mode: 'basic' | 'extreme') {
+	prefs.customizationMode = mode;
+	if (browser) localStorage.setItem('customization_mode', mode);
+}
+
+export interface BlockedArtist {
+	id?: string;
+	name: string;
+	blockedAt: number;
+}
+
+function loadBlockedArtists(): BlockedArtist[] {
+	if (!browser) return [];
+	try {
+		const raw = localStorage.getItem('blocked_artists');
+		return raw ? JSON.parse(raw) : [];
+	} catch {
+		return [];
+	}
+}
+
+export const blockedArtists = $state<BlockedArtist[]>(loadBlockedArtists());
+
+export function isArtistBlocked(id?: string | null, name?: string | null): boolean {
+	if (!id && !name) return false;
+	const normName = name?.trim().toLowerCase();
+	return blockedArtists.some((b) => {
+		if (id && b.id && b.id === id) return true;
+		if (normName && b.name.trim().toLowerCase() === normName) return true;
+		if (normName && normName.split(',').map((s) => s.trim()).includes(b.name.trim().toLowerCase())) return true;
+		return false;
+	});
+}
+
+export function blockArtist(name: string, id?: string | null) {
+	if (!name && !id) return;
+	const cleanName = name.trim();
+	if (isArtistBlocked(id, cleanName)) {
+		toast.info(`${cleanName} is already blocked`);
+		return;
+	}
+	blockedArtists.push({ id: id ?? undefined, name: cleanName, blockedAt: Date.now() });
+	if (browser) localStorage.setItem('blocked_artists', JSON.stringify(blockedArtists));
+	toast.success(`Blocked artist ${cleanName}`);
+
+	if (playback.now && isArtistBlocked(playback.now.artistId, playback.now.artists)) {
+		api.nextTrack().catch(() => {});
+	}
+}
+
+export function unblockArtist(idOrName: string) {
+	const idx = blockedArtists.findIndex(
+		(b) => (b.id && b.id === idOrName) || b.name.toLowerCase() === idOrName.toLowerCase()
+	);
+	if (idx !== -1) {
+		const removed = blockedArtists.splice(idx, 1)[0];
+		if (browser) localStorage.setItem('blocked_artists', JSON.stringify(blockedArtists));
+		toast.info(`Unblocked artist ${removed.name}`);
+	}
+}
+
+export function preloadQueueThumbnails(queue: QueueState) {
+	if (!browser || !queue?.items) return;
+	const cur = queue.currentIndex ?? 0;
+	const upcoming = queue.items.slice(cur + 1, cur + 4);
+	for (const item of upcoming) {
+		if (item.thumbnail) {
+			const img = new Image();
+			img.src = thumb(item.thumbnail, 544) ?? '';
+		}
+	}
+}
+
+/** videoId → the in-flight or settled loopback URL for its music video (null when it has none).
+ * It is shared outside the player component so closing and reopening it does not resolve a video
+ * stream again. */
+const videoUrls = new Map<string, Promise<string | null>>();
+
+export function wantedVideoHeight() {
+	const px = (window.innerHeight - 176) * 0.85;
+	return [360, 480, 720].find((h) => h >= px) ?? 720;
+}
+
+export function videoUrlFor(videoId: string): Promise<string | null> {
+	let p = videoUrls.get(videoId);
+	if (!p) {
+		p = api.videoStream(videoId, wantedVideoHeight()).catch(() => null);
+		if (videoUrls.size >= 8) videoUrls.delete(videoUrls.keys().next().value!);
+		videoUrls.set(videoId, p);
+	}
+	return p;
+}
+
+export function forgetVideoUrl(videoId: string) {
+	videoUrls.delete(videoId);
+	api.forgetVideoStream(videoId).catch(() => {});
+}
+
+/** Show the right Now Playing sidebar when playback starts. */
+export const openPlayer = () => {
+	np.sidebarOpen = true;
+	np.open = false;
+};
+
+/** Play one track (a search row, a song card, a shelf), and show it. */
+export function playSong(song: SongItem) {
+	openPlayer();
+	return api.play(song);
+}
+
+export const auth = $state({
+	account: null as Account | null,
+	// Bumped on every sign-in/out. The root layout keys the page on it, so the current route
+	// remounts and refetches — home/browse data is per-account and otherwise stays stale until
+	// the user navigates away and back.
+	epoch: 0
+});
+
+// The signed-in user's library (playlists + liked), shared by the sidebar list and the Library page
+// so a create reflects in both instantly (context/11 UI contract, optimistic updates).
+export const library = $state({
+	items: [] as BrowseItem[],
+	loaded: false,
+	loading: false,
+	error: null as string | null,
+	// Saved albums and artists. Only the Library page renders them, but they live here rather than in
+	// that page's local state so leaving and coming back paints the cached grid instead of a skeleton
+	// while three requests go out again.
+	albums: [] as BrowseItem[],
+	artists: [] as BrowseItem[],
+	extrasLoaded: false,
+	extrasLoading: false,
+	extrasError: null as string | null
+});
+
+// Account switches can happen while a library request is still in flight. A generation lets the
+// old response finish harmlessly instead of overwriting the newly selected channel's data.
+let libraryGeneration = 0;
+
+function resetLibraryForAccount() {
+	libraryGeneration++;
+	library.items = [];
+	savedIn.map = {};
+	library.loaded = false;
+	library.loading = false;
+	library.error = null;
+	library.albums = [];
+	library.artists = [];
+	library.extrasLoaded = false;
+	library.extrasLoading = false;
+	library.extrasError = null;
+}
+
+/** Fetch the library once (or force a refresh). No-op while a load is in flight. */
+export async function loadLibrary(force = false) {
+	if (library.loading || (library.loaded && !force)) return;
+	const generation = libraryGeneration;
+	library.loading = true;
+	library.error = null;
+	try {
+		const items = await api.getLibrary();
+		if (generation !== libraryGeneration) return;
+		library.items = items;
+		library.loaded = true;
+	} catch (e) {
+		if (generation === libraryGeneration) library.error = String(e);
+	} finally {
+		if (generation === libraryGeneration) library.loading = false;
+	}
+}
+
+/** Saved albums + artists, same caching rules as `loadLibrary`. */
+export async function loadLibraryExtras(force = false) {
+	if (library.extrasLoading || (library.extrasLoaded && !force)) return;
+	const generation = libraryGeneration;
+	library.extrasLoading = true;
+	library.extrasError = null;
+	try {
+		const [albums, artists] = await Promise.all([
+			api.getLibraryAlbums(),
+			api.getLibraryArtists()
+		]);
+		if (generation !== libraryGeneration) return;
+		library.albums = albums;
+		library.artists = artists;
+		library.extrasLoaded = true;
+	} catch (e) {
+		if (generation === libraryGeneration) library.extrasError = String(e);
+	} finally {
+		if (generation === libraryGeneration) library.extrasLoading = false;
+	}
+}
+
+/** Create a playlist and optimistically prepend it so every view updates immediately. */
+export async function createLibraryPlaylist(
+	title: string,
+	description?: string,
+	isPublic?: boolean,
+	coverPath?: string | null
+): Promise<string> {
+	const id = await api.createPlaylist(title, description, isPublic, coverPath ?? undefined);
+	// YouTube's library browse is eventually-consistent and won't include a brand-new playlist for a
+	// few seconds, so surface it immediately instead of refetching.
+	const browseId = id.startsWith('VL') ? id : `VL${id}`;
+	library.items = [
+		{ kind: 'playlist', id: browseId, title, subtitle: description || undefined },
+		...library.items
+	];
+	return browseId;
+}
+
+// --- Lyrics Sync Offset Store (BetterLyrics style - per-song ONLY) ---
+const LYRICS_OFFSET_KEY_PREFIX = 'nocturne_lyrics_offset_';
+
+const offsetsStore = $state<Record<string, number>>({});
+
+export function getLyricsOffset(videoId: string): number {
+	if (!videoId) return 0;
+	if (offsetsStore[videoId] !== undefined) return offsetsStore[videoId];
+	try {
+		const raw = localStorage.getItem(LYRICS_OFFSET_KEY_PREFIX + videoId);
+		if (raw !== null) {
+			const num = parseFloat(raw);
+			if (!isNaN(num)) {
+				offsetsStore[videoId] = num;
+				return num;
+			}
+		}
+	} catch {}
+	return 0;
+}
+
+export function setLyricsOffset(videoId: string, offsetMs: number): void {
+	if (!videoId) return;
+	const clamped = Math.max(-10000, Math.min(10000, Math.round(offsetMs)));
+	offsetsStore[videoId] = clamped;
+	try {
+		if (clamped === 0) {
+			localStorage.removeItem(LYRICS_OFFSET_KEY_PREFIX + videoId);
+		} else {
+			localStorage.setItem(LYRICS_OFFSET_KEY_PREFIX + videoId, String(clamped));
+		}
+	} catch {}
+}
+
+export const lyricsSync = {
+	get offsets(): Record<string, number> {
+		return offsetsStore;
+	},
+	get currentOffsetMs(): number {
+		const vid = playback.now?.videoId;
+		if (!vid) return 0;
+		return getLyricsOffset(vid);
+	},
+	set currentOffsetMs(val: number) {
+		const vid = playback.now?.videoId;
+		if (vid) {
+			setLyricsOffset(vid, val);
+		}
+	}
+};
+
+export function adjustCurrentLyricsOffset(deltaMs: number): void {
+	const videoId = playback.now?.videoId;
+	if (!videoId) return;
+	const current = getLyricsOffset(videoId);
+	setLyricsOffset(videoId, current + deltaMs);
+}
+
+export function resetCurrentLyricsOffset(): void {
+	const videoId = playback.now?.videoId;
+	if (!videoId) return;
+	setLyricsOffset(videoId, 0);
+}
+
+/** Optimistically apply an edit to a library playlist's row (sidebar + Library grid), so a rename
+ *  or a new cover shows up everywhere without a refetch. */
+export function patchLibraryPlaylist(playlistId: string, patch: Partial<BrowseItem>) {
+	library.items = library.items.map((it) => (it.id === playlistId ? { ...it, ...patch } : it));
+}
+
+/** Optimistically bump the "N tracks" count in a library playlist's subtitle (sidebar + Library). */
+export function bumpLibraryTrackCount(playlistId: string, delta: number) {
+	library.items = library.items.map((it) => {
+		if (it.id !== playlistId || !it.subtitle) return it;
+		const subtitle = it.subtitle.replace(/\d+\s+tracks?/, (m) => {
+			const n = Math.max(0, parseInt(m) + delta);
+			return `${n} track${n === 1 ? '' : 's'}`;
+		});
+		return { ...it, subtitle };
+	});
+}
+
+// --- Saved-in-playlists index (Rust commands::playlist_index) ---------------------------------
+
+/**
+ * videoId → the ids of your own playlists holding it, mirrored from SQLite. Track rows read it to
+ * draw the "saved" checkmark, so every add and remove patches it in place: waiting for the next
+ * crawl would leave the row lying about a playlist the user just put it in.
+ */
+export const savedIn = $state({ map: {} as Record<string, string[]> });
+
+/**
+ * The playlists holding `videoId`, in library order. Resolved against `library.items` rather than
+ * carrying titles of its own, so a playlist deleted or unsaved anywhere stops being named here the
+ * moment the library list drops it.
+ */
+export function savedPlaylists(videoId: string): BrowseItem[] {
+	const ids = savedIn.map[videoId];
+	if (!ids?.length) return [];
+	const holding = new Set(ids);
+	return library.items.filter((it) => holding.has(it.id));
+}
+
+// Module-level, so the whole list shares one answer: a per-row `Object.keys` over a five-figure
+// map would be paid a thousand times a paint.
+const indexHasAnything = $derived(Object.keys(savedIn.map).length > 0);
+
+/** Whether anything is indexed at all, which is what decides if a row reserves the mark's slot. */
+export const anySaved = () => indexHasAnything;
+
+/**
+ * Load the index: the stored one first so rows mark up immediately, then whatever a refresh crawl
+ * turns up. Generation-guarded like the library itself, so an account switch mid-flight can't
+ * paint the previous channel's playlists.
+ */
+export async function loadSavedIndex() {
+	const generation = libraryGeneration;
+	const apply = (map: Record<string, string[]>) => {
+		if (generation === libraryGeneration) savedIn.map = map;
+	};
+	await api
+		.playlistIndex()
+		.then(apply)
+		.catch(() => {});
+	await api
+		.syncPlaylistIndex()
+		.then(apply)
+		.catch(() => {});
+}
+
+/** Every one of `videoIds` is now in `playlistId`, refused duplicates included: YouTube saying the
+ *  playlist already holds a track is the same fact the mark shows. */
+export function noteSavedIn(playlistId: string, videoIds: string[]) {
+	for (const videoId of videoIds) {
+		const ids = savedIn.map[videoId] ?? [];
+		if (!ids.includes(playlistId)) savedIn.map[videoId] = [...ids, playlistId];
+	}
+}
+
+export function noteUnsavedFrom(playlistId: string, videoId: string) {
+	const ids = savedIn.map[videoId];
+	if (ids?.includes(playlistId)) savedIn.map[videoId] = ids.filter((id) => id !== playlistId);
+}
+
+// --- Local music (Rust local.rs) --------------------------------------------------------------
+// Shared like `library` is: the Library page renders it, and the app rescans at startup so tiles
+// pointing at deleted files disappear before anyone clicks one.
+
+export const local = $state({
+	folders: [] as string[],
+	albums: [] as BrowseItem[],
+	artists: [] as BrowseItem[],
+	songs: [] as SongItem[],
+	loading: false,
+	scanned: false,
+	error: null as string | null
+});
+
+/**
+ * Music that is no longer on disk, from a scan or from a play attempt that found nothing there.
+ * Everything holding those ids drops them in the same tick: the Local tab's lists, the Shortcuts
+ * grid, sidebar pins, recents. Nothing waits for a refetch, and nothing is left to fail later.
+ */
+export function forgetLocal(removed: string[]) {
+	if (!removed.length) return;
+	const gone = new Set(removed);
+	local.songs = local.songs.filter((s) => !gone.has(s.video_id));
+	local.albums = local.albums.filter((a) => !gone.has(a.id));
+	local.artists = local.artists.filter((a) => !gone.has(a.id));
+	const dropped = pl.forgetIds(personal, removed);
+	savePersonal();
+	if (dropped) toast(`Removed ${dropped} shortcut${dropped === 1 ? '' : 's'} for deleted music`);
+}
+
+/** Take a scan result: replace the library, then prune whatever it reports as gone. */
+function applyLocal(lib: api.LocalLibrary) {
+	local.folders = lib.folders;
+	local.albums = lib.albums;
+	local.artists = lib.artists;
+	local.songs = lib.songs;
+	local.scanned = true;
+	local.error = null;
+	forgetLocal(lib.removed);
+}
+
+async function runLocal(call: () => Promise<api.LocalLibrary>) {
+	local.loading = true;
+	try {
+		applyLocal(await call());
+	} catch (e) {
+		local.error = String(e);
+	} finally {
+		local.loading = false;
+	}
+}
+
+/** No-op while a scan is already running: the startup scan and opening the Local tab overlap. */
+export const scanLocal = () =>
+	local.loading ? Promise.resolve() : runLocal(api.getLocalLibrary);
+export const addLocalFolder = (path: string) => runLocal(() => api.addLocalFolder(path));
+export const removeLocalFolder = (path: string) => runLocal(() => api.removeLocalFolder(path));
+
+// --- Personalization: the Shortcuts grid, sidebar pins, play recency (see personal.ts) ----------
+// The Shortcuts grid holds what the user puts in it, plus the one tile the app suggests (On
+// Repeat, via `seedOnRepeatPick`). See `personal.ts`.
+// localStorage rather than SQLite: only the webview ever reads this, so a table + commands + a
+// `UI_SETTINGS` allowlist entry would buy nothing. Loaded at module scope (guarded like the layout's
+// `initTheme`) so the sidebar and home grid render sorted on the very first paint.
+// ponytail: move to db.rs if it ever needs to be account-scoped or readable outside the webview.
+const PERSONAL_KEY = 'nocturne:personal';
+
+export const personal = $state<Personal>(pl.empty());
+
+if (browser) {
+	try {
+		// Read nocturne:personal first, falling back to legacy limusic:personal for one-time migration.
+		const raw = localStorage.getItem(PERSONAL_KEY) || localStorage.getItem('limusic:personal');
+		Object.assign(personal, pl.hydrate(JSON.parse(raw ?? 'null')));
+	} catch {
+		// Unreadable blob — start clean rather than break startup.
+	}
+}
+
+function savePersonal() {
+	if (!browser) return;
+	try {
+		localStorage.setItem(PERSONAL_KEY, JSON.stringify(personal));
+	} catch {
+		// Quota or a locked store: personalization is best-effort, never fatal.
+	}
+}
+
+/** Add to Shortcuts (evicting the tile gone longest unplayed when the grid is full). */
+export function addPick(item: BrowseItem) {
+	const added = pl.addPick(personal, item);
+	savePersonal();
+	toast.success(added ? 'Added to shortcuts' : 'Already in shortcuts');
+}
+
+/** Drop landed: move (or add) a tile so it sits before `beforeId` — null appends. No toast: the
+ *  grid rearranging under the cursor is its own feedback. */
+export function placePick(item: BrowseItem, beforeId: string | null) {
+	pl.placePick(personal, item, beforeId);
+	savePersonal();
+}
+
+export function removePick(id: string) {
+	pl.removePick(personal, id);
+	savePersonal();
+}
+
+/** How many songs On Repeat needs before it's worth a tile on the grid. */
+const ON_REPEAT_SEED_MIN = 5;
+
+/**
+ * Put On Repeat on the Shortcuts grid once it has enough songs to be useful: the one tile the app
+ * adds by itself. Called on every home visit; `seedPick` owns the "should this go on" decision, so
+ * removing the tile is permanent no matter how many times this runs. Cheap to repeat: On Repeat is
+ * built from local SQLite, so the fetch never touches the network.
+ */
+export async function seedOnRepeatPick() {
+	try {
+		const onRepeat = await api.getPlaylist(api.ON_REPEAT_ID);
+		if (onRepeat.items.length < ON_REPEAT_SEED_MIN) return;
+		const added = pl.seedPick(personal, {
+			kind: 'playlist',
+			id: api.ON_REPEAT_ID,
+			title: onRepeat.title ?? 'On Repeat',
+			// Not a track count: the tile is stored as-is, so a number here would go stale the next
+			// time the playlist re-ranks itself.
+			subtitle: 'Your most played'
+		});
+		if (added) savePersonal();
+	} catch {
+		// No tile this time; the next home visit tries again.
+	}
+}
+
+/**
+ * Home's arrangement, as set in the Edit modal. `order` is every section key the modal listed, in
+ * display order, hidden ones included — a hidden section that keeps its slot comes back where it was.
+ */
+export function saveHomeLayout(order: string[], hidden: string[]) {
+	// Spread, not a fresh object: `seen` is written by the feed, not by the modal, and rebuilding
+	// `home` from the two lists the modal owns used to drop it.
+	personal.home = { ...personal.home, order, hidden };
+	savePersonal();
+}
+
+/** Remember the shelves this page of the feed carried, for Edit home. See `pl.noteSections`. */
+export function noteHomeSections(titles: string[]) {
+	if (pl.noteSections(personal, titles)) savePersonal();
+}
+
+/** Called from every card click app-wide, so only persist when the id was actually on the grid. */
+export function touchPick(id: string) {
+	if (pl.touchPick(personal, id)) savePersonal();
+}
+
+/**
+ * Save a playlist/album/artist to the library from this machine, or take it back out. Returns the
+ * new state. Not account-scoped and never cleared on sign-in: what a signed-out user saved is still
+ * theirs afterwards, sitting next to whatever YouTube says their library holds.
+ */
+export function toggleSaved(item: BrowseItem): boolean {
+	const saved = pl.toggleSaved(personal, item);
+	savePersonal();
+	return saved;
+}
+
+export const isSaved = (id: string): boolean => pl.isSaved(personal, id);
+
+/**
+ * Check if a song, album, artist, or playlist is in the user's library (either synced with YouTube or saved locally).
+ */
+export function isItemSavedInLibrary(item: BrowseItem | SongItem | { id?: string; video_id?: string; kind?: string }): boolean {
+	if ('video_id' in item && item.video_id) {
+		return isLiked({ video_id: item.video_id } as SongItem) || isSaved(item.video_id);
+	}
+	const b = item as BrowseItem;
+	if (b.kind === 'song') {
+		return isLiked({ video_id: b.id } as SongItem) || isSaved(b.id);
+	}
+	if (b.kind === 'album') {
+		return isSaved(b.id) || library.albums.some((a) => a.id === b.id);
+	}
+	if (b.kind === 'artist') {
+		return isSaved(b.id) || library.artists.some((a) => a.id === b.id);
+	}
+	if (b.kind === 'playlist') {
+		return isSaved(b.id) || library.items.some((p) => p.id === b.id);
+	}
+	return isSaved(b.id ?? '');
+}
+
+/**
+ * Save/remove a song, album, artist, or playlist to/from library.
+ * Writes directly to the user's YouTube account if signed in, or to local library if signed out.
+ */
+export async function toggleItemLibrary(item: BrowseItem | SongItem): Promise<boolean> {
+	const isSong = 'video_id' in item || (item as BrowseItem).kind === 'song';
+	const id = 'video_id' in item ? item.video_id : item.id;
+	const title = item.title ?? 'Item';
+
+	// 1. Signed out: save locally
+	if (!auth.account?.signedIn) {
+		const browseItem: BrowseItem = 'video_id' in item
+			? { kind: 'song', id: item.video_id, title: item.title, subtitle: item.artists, thumbnail: item.thumbnail }
+			: item;
+		const saved = toggleSaved(browseItem);
+		toast.success(saved ? 'Saved to library' : 'Removed from library');
+		return saved;
+	}
+
+	// 2. Signed in: write to YouTube account
+	const currentlyIn = isItemSavedInLibrary(item);
+	const next = !currentlyIn;
+
+	if (isSong) {
+		const songItem: SongItem = 'video_id' in item
+			? item
+			: { video_id: item.id, title: item.title, artists: item.subtitle ?? '', thumbnail: item.thumbnail };
+		if (isSaved(songItem.video_id)) {
+			pl.toggleSaved(personal, { kind: 'song', id: songItem.video_id, title: songItem.title });
+			savePersonal();
+		}
+		await toggleRating(songItem, 'like');
+		return next;
+	}
+
+	const b = item as BrowseItem;
+	if (isSaved(b.id)) {
+		pl.toggleSaved(personal, b);
+		savePersonal();
+	}
+
+	if (b.kind === 'album') {
+		const prev = [...library.albums];
+		if (next) {
+			if (!library.albums.some((a) => a.id === b.id)) library.albums = [b, ...library.albums];
+		} else {
+			library.albums = library.albums.filter((a) => a.id !== b.id);
+		}
+		try {
+			let targetId = b.id;
+			if (next && b.id.startsWith('MPRE')) {
+				try {
+					const albumData = await api.getAlbum(b.id);
+					if (albumData.playlistId) targetId = albumData.playlistId;
+				} catch {}
+			}
+			await api.setAlbumSaved(targetId, next);
+			toast.success(next ? 'Saved to library' : 'Removed from library');
+			return next;
+		} catch (e) {
+			library.albums = prev;
+			toast.error(String(e));
+			return currentlyIn;
+		}
+	} else if (b.kind === 'artist') {
+		const prev = [...library.artists];
+		if (next) {
+			if (!library.artists.some((a) => a.id === b.id)) library.artists = [b, ...library.artists];
+		} else {
+			library.artists = library.artists.filter((a) => a.id !== b.id);
+		}
+		try {
+			await api.subscribe(b.id, next);
+			toast.success(next ? 'Saved to library' : 'Removed from library');
+			return next;
+		} catch (e) {
+			library.artists = prev;
+			toast.error(String(e));
+			return currentlyIn;
+		}
+	} else if (b.kind === 'playlist') {
+		const prev = [...library.items];
+		if (next) {
+			if (!library.items.some((p) => p.id === b.id)) library.items = [b, ...library.items];
+		} else {
+			library.items = library.items.filter((p) => p.id !== b.id);
+		}
+		try {
+			await api.setAlbumSaved(b.id, next);
+			toast.success(next ? 'Saved to library' : 'Removed from library');
+			return next;
+		} catch (e) {
+			library.items = prev;
+			toast.error(String(e));
+			return currentlyIn;
+		}
+	}
+
+	return next;
+}
+
+export function createPlaylistFolder(name: string, parentId: string | null = null): pl.PlaylistFolder {
+	const folder = pl.createFolder(personal, name, parentId);
+	savePersonal();
+	return folder;
+}
+
+export function createFolderFromPlaylists(
+	name: string,
+	playlistIds: string[],
+	parentId: string | null = null
+): pl.PlaylistFolder {
+	const folder = pl.createFolderFromPlaylists(personal, name, playlistIds, parentId);
+	savePersonal();
+	return folder;
+}
+
+export function renamePlaylistFolder(folderId: string, newName: string) {
+	pl.renameFolder(personal, folderId, newName);
+	savePersonal();
+}
+
+export function toggleFolderCollapsed(folderId: string) {
+	pl.toggleFolderCollapsed(personal, folderId);
+	savePersonal();
+}
+
+export function deletePlaylistFolder(folderId: string) {
+	pl.deleteFolder(personal, folderId);
+	savePersonal();
+}
+
+export function addPlaylistToFolder(folderId: string, playlistId: string) {
+	pl.addPlaylistToFolder(personal, folderId, playlistId);
+	savePersonal();
+}
+
+export function removePlaylistFromFolder(folderId: string, playlistId: string) {
+	pl.removePlaylistFromFolder(personal, folderId, playlistId);
+	savePersonal();
+}
+
+export function movePlaylistToFolder(playlistId: string, targetFolderId: string | null) {
+	pl.movePlaylistToFolder(personal, playlistId, targetFolderId);
+	savePersonal();
+}
+
+export function moveFolderToFolder(sourceFolderId: string, targetFolderId: string | null): boolean {
+	const ok = pl.moveFolderToFolder(personal, sourceFolderId, targetFolderId);
+	if (ok) savePersonal();
+	return ok;
+}
+
+export function findPlaylistFolder(playlistId: string): pl.PlaylistFolder | undefined {
+	return pl.findPlaylistFolder(personal, playlistId);
+}
+
+/** Saved here and pushed to the account: while signed in, unsaving it belongs on the item's page,
+ *  where the button knows which write to send. Signed out, this row is the only library there is. */
+export const isSynced = (id: string): boolean => pl.isSynced(personal, id);
+
+/**
+ * Push everything saved on this machine into the signed-in account. The local rows stay put and are
+ * only flagged `synced`: they are the whole library again the moment the user signs out, and
+ * `mergeSaved` dedupes the two copies into one card while signed in. Sequential, like every other
+ * bulk write here (a library is a handful of requests, don't hammer). Anything that fails keeps its
+ * flag off, so pressing the button again retries exactly what's left.
+ */
+export async function syncSavedToYouTube(): Promise<{ synced: number; failed: number }> {
+	// Fresh: "is this already in the account" is the whole duplicate check.
+	await loadLibrary(true);
+	const known = new Set(library.items.map((i) => i.id));
+	const done: string[] = [];
+	let failed = 0;
+	for (const item of pl.unsynced(personal)) {
+		try {
+			if (item.kind === 'album') {
+				// YouTube's own answer, so it can't be liked twice. The album's audio playlist is the
+				// like target and only its page carries it, which is what this fetch is for.
+				const album = await api.getAlbum(item.id);
+				if (!album.inLibrary) {
+					if (!album.playlistId) throw new Error('no album playlist');
+					await api.setAlbumSaved(album.playlistId, true);
+				}
+			} else if (item.kind === 'artist') {
+				// Subscribing twice is the same subscription. No pre-check: the library's artist grid
+				// is built from the songs in your library, not from subscriptions, so it can't answer.
+				await api.subscribe(item.id, true);
+			} else if (item.kind === 'playlist') {
+				// A playlist is liked by its browseId (Rust strips the `VL`), and it lands in the same
+				// grid `known` was built from, so a hit there means it is already saved.
+				if (!known.has(item.id)) await api.setAlbumSaved(item.id, true);
+			} else {
+				continue; // ponytail: songs can't be saved today, so there is nothing to push
+			}
+			done.push(item.id);
+		} catch {
+			failed++;
+		}
+	}
+	if (done.length) {
+		pl.markSynced(personal, done);
+		savePersonal();
+		// No refetch: YouTube's library browse is eventually consistent and won't list a just-liked
+		// album for a few seconds (same reason `createLibraryPlaylist` prepends). The local rows are
+		// still on screen through `mergeSaved`, so there is nothing to bridge.
+	}
+	return { synced: done.length, failed };
+}
+
+export function togglePin(id: string) {
+	const result = pl.togglePin(personal, id);
+	if (result === 'full') toast.error(`Unpin one first — ${pl.MAX_PINS} pins max`);
+	else savePersonal();
+	return result;
+}
+
+// Rating state that outlives one row. A song's `rating` is a snapshot from whenever its page was
+// fetched, and the same song shows up in several places at once (a list row, its ⋯ menu, the player
+// bar). One override map keyed by videoId keeps them all telling the same story; the current track
+// stays owned by `playback.rating`, which the Rust side reseeds on every track change.
+const ratings = $state<Record<string, Rating>>({});
+
+const MAX_OVERRIDES = 500;
+function capOverrides(map: Record<string, unknown>): void {
+	if (Object.keys(map).length > MAX_OVERRIDES) {
+		for (const k in map) delete map[k];
+	}
+}
+
+export function ratingOf(song: SongItem): Rating {
+	if (playback.now?.videoId === song.video_id) return playback.rating;
+	return ratings[song.video_id] ?? song.rating ?? 'indifferent';
+}
+
+export const isLiked = (song: SongItem): boolean => ratingOf(song) === 'like';
+
+/** Like/unlike whatever is playing. Thin wrapper so the player bar and the mini player share one
+ *  implementation (and one optimistic path) with every list row. */
+export function toggleNowPlayingLike(): Promise<void> {
+	const n = playback.now;
+	if (!n) return Promise.resolve();
+	return toggleRating({ video_id: n.videoId, title: n.title, artists: n.artists }, 'like');
+}
+
+// --- Volume ------------------------------------------------------------------------------------
+// Shared by the player bar and the mini player, which means there is one behaviour to get right
+// instead of two to keep in step.
+
+// Live while dragging (the user hears it), coalesced to one update per frame so a drag doesn't
+// flood IPC. One *frame*, not a 100ms throttle, because mpv has no volume ramp: `ao_apply_gain`
+// (audio/out/ao.c) multiplies the next output buffer by the new gain and that's it, so every
+// update is a step discontinuity in the waveform and the bigger the step the louder the click.
+// At 100ms a drag landed as a handful of ~12dB jumps, which popped audibly; a frame keeps each
+// step small enough to be masked by the music.
+// ponytail: smaller steps, not a real ramp. If a fast drag still pops, slew toward the target in
+// Rust (~30ms of small steps, cancelled by the next set_volume) rather than shrinking this again.
+let volFrame: number | null = null;
+
+export function dragVolume(v: number) {
+	playback.volume = v;
+	if (volFrame !== null) return;
+	volFrame = requestAnimationFrame(() => {
+		volFrame = null;
+		api.setVolume(playback.volume);
+	});
+}
+
+/** Pointer released: always send the final value, pending frame or not. */
+export function commitVolume(v: number) {
+	if (volFrame !== null) {
+		cancelAnimationFrame(volFrame);
+		volFrame = null;
+	}
+	playback.volume = v;
+	api.setVolume(v);
+	// Persisted here rather than in Rust's `set_volume`: a drag calls that once per frame and every
+	// settings write is an fsync. A commit is one per gesture, and it's the level to reopen at.
+	api.setSetting('volume', String(v)).catch(() => {});
+}
+
+/**
+ * One keyboard step of volume (Ctrl+> / Ctrl+<). Live like a drag, so a held key gets one IPC per
+ * frame instead of one per repeat, and persisted only once the presses stop: a settings write is an
+ * fsync, and a run of taps is one gesture the same way a drag is.
+ */
+let volSettle: ReturnType<typeof setTimeout> | undefined;
+
+export function nudgeVolume(delta: number) {
+	dragVolume(Math.min(100, Math.max(0, playback.volume + delta)));
+	clearTimeout(volSettle);
+	volSettle = setTimeout(() => commitVolume(playback.volume), 400);
+}
+
+/**
+ * Mouse wheel over the volume slider. Same gesture as a run of key presses, so it reuses the nudge
+ * path (live per frame, persisted once the scrolling stops). preventDefault keeps the page from
+ * scrolling underneath: Svelte only forces passive listeners on touch events, not wheel.
+ */
+export function wheelVolume(e: WheelEvent) {
+	e.preventDefault();
+	nudgeVolume(e.deltaY < 0 ? 5 : -5);
+}
+
+/**
+ * Tempo + pitch (the "Advanced" dialog). Applied live, reverted if mpv rejects it: the pitch
+ * filter needs a libmpv built with librubberband, and Rust applies pitch first so a rejection
+ * leaves neither of them set.
+ */
+export function setTempoPitch(speed: number, semitones: number) {
+	const previous = { speed: playback.speed, semitones: playback.semitones };
+	playback.speed = speed;
+	playback.semitones = semitones;
+	api.setPlaybackParams(speed, semitones).catch((e) => {
+		Object.assign(playback, previous);
+		toast.error(String(e));
+	});
+}
+
+// Mute *is* volume 0 — no separate flag, so dragging the slider off zero un-mutes for free and the
+// icon can't disagree with what you hear. Remembers the level to come back to; falls back to 100
+// when the user dragged to zero themselves (nothing was remembered).
+let preMute = 100;
+
+export function toggleMute() {
+	const muted = playback.volume === 0;
+	if (!muted) preMute = playback.volume;
+	commitVolume(muted ? preMute || 100 : 0);
+}
+
+/** Hand over to the floating widget (Rust `mini.rs`); the app hides to the tray behind it. */
+export function openMiniPlayer() {
+	if (!api.isTauri()) {
+		showDesktopFeature(
+			'Floating Mini Player',
+			'The system floating mini-player widget requires native OS window management available in Nocturne Desktop.'
+		);
+		return;
+	}
+	api.openMini().catch((e) => toast.error(String(e)));
+}
+
+/** Advance the repeat mode: off → all → one → off. */
+export function cycleRepeat(): Promise<void> {
+	const r = playback.queue.repeat ?? 'off';
+	return api.setRepeat(r === 'off' ? 'all' : r === 'all' ? 'one' : 'off');
+}
+
+const RATED: Record<Rating, string> = {
+	like: 'Added to liked songs',
+	dislike: 'Disliked',
+	indifferent: 'Rating removed'
+};
+
+/** Optimistic rating change, reverted if YouTube rejects it. */
+async function rate(song: SongItem, next: Rating) {
+	const prev = ratingOf(song);
+	if (prev === next) return;
+	const isNow = playback.now?.videoId === song.video_id;
+	ratings[song.video_id] = next;
+	capOverrides(ratings);
+	if (isNow) playback.rating = next;
+	try {
+		await api.rate(song.video_id, next);
+		toast.success(RATED[next]);
+		if (next === 'dislike') dropDisliked(song.video_id, isNow);
+	} catch (e) {
+		ratings[song.video_id] = prev;
+		if (isNow) playback.rating = prev;
+		toast.error(String(e));
+	}
+}
+
+/** A disliked track shouldn't keep playing, or sit waiting to. Skip it if it's playing, and drop
+ *  every upcoming copy of it from the queue (back to front, so the indices stay valid).
+ *  Already-played entries stay: the history is what happened, not what you'd pick again. */
+async function dropDisliked(videoId: string, isNow: boolean) {
+	const { items, currentIndex } = playback.queue;
+	// Removals first, and only above the playing row, so `currentIndex` never shifts under us and
+	// the skip lands on a track that survived. Sequential: each one renumbers the backend's queue.
+	for (let i = items.length - 1; i > currentIndex; i--) {
+		if (items[i]?.video_id === videoId) await api.removeFromQueue(i).catch(() => {});
+	}
+	if (isNow) api.nextTrack().catch((e) => toast.error(String(e)));
+}
+
+/** Click the rating you already have to clear it, the way YouTube Music's own buttons work.
+ *  One call either way: YouTube's states are exclusive, so a dislike un-likes on its own. */
+export function toggleRating(song: SongItem, want: 'like' | 'dislike') {
+	return rate(song, ratingOf(song) === want ? 'indifferent' : want);
+}
+
+/**
+ * Play a playlist/album/artist and record that it was played, which is what sorts the sidebar and
+ * seeds Shortcuts. Every "play these tracks from somewhere" call site goes through this.
+ * `sourceId` (playlist/album pages only) points autoplay at that context's radio.
+ * `continuation` (the playlist page's next-page token) hands the rest of a long playlist to the
+ * backend to walk in the background, so playback starts on the tracks already loaded.
+ */
+export function playFrom(
+	source: BrowseItem,
+	items: SongItem[],
+	start: number | null,
+	sourceId?: string,
+	shuffle?: boolean,
+	continuation?: string
+) {
+	pl.noteRecent(personal, source);
+	pl.touchPick(personal, source.id);
+	savePersonal();
+	openPlayer();
+	return api.playPlaylist(items, start, sourceId, source.title, shuffle, continuation);
+}
+
+/**
+ * "Play next" / "Add to queue" from any surface (song menus, card menus, page headers). One
+ * implementation so the wording is the same everywhere. Guests get their toast from the session
+ * flow instead ("Added to the session queue."), so this one stays quiet for them.
+ */
+export async function enqueue(
+	items: SongItem[],
+	next: boolean,
+	from?: string,
+	continuation?: string
+) {
+	if (!items.length) return;
+	try {
+		// A "Play next" block is capped at the tracks the page has loaded: shoving 5000 in front of
+		// what's playing isn't what anyone means by "next". "Add to queue" walks the rest.
+		await (next ? api.playNext(items, from) : api.addToQueue(items, from, continuation));
+	} catch (e) {
+		toast.error(String(e));
+		return;
+	}
+	if (lt.role === 'guest') return;
+	const n = items.length;
+	if (next) toast.success(n === 1 ? 'Playing next' : `${n} songs play next`);
+	else toast.success(n === 1 ? 'Added to queue' : `Added ${n} songs to the queue`);
+}
+
+/**
+ * Start a radio from any surface (song menus, card menus, page headers). One implementation so the
+ * feedback is the same everywhere: radio is a network round trip before anything audibly happens,
+ * so it says so up front rather than looking like the click was swallowed.
+ */
+export async function startRadio(
+	kind: 'song' | 'artist' | 'album' | 'playlist',
+	id: string,
+	name?: string
+) {
+	toast('Starting radio…');
+	openPlayer();
+	try {
+		await api.startRadio(kind, id, name);
+	} catch (e) {
+		toast.error(String(e));
+	}
+}
+
+// Transient UI state for write actions.
+export const ui = $state({
+	addSongs: null as SongItem[] | null, // add-to-playlist picker target(s), full items for optimistic appends
+	share: null as BrowseItem | null, // the share modal's target
+	toast: null as Toast | null,
+	settingsOpen: false, // the settings modal
+	ltOpen: false, // the Listen Together modal
+	linkOpen: false, // the "open a pasted link" modal
+	paletteOpen: false, // the Ctrl+K search palette
+	shortcutsOpen: false, // the Ctrl+H keyboard-shortcuts list
+	channelPickerOpen: false,
+	channelPickerRequired: false, // true while a multi-channel login is not finalized yet
+	channelIdentities: [] as AccountIdentity[],
+	// Manual sidebar collapse, lg and up (below that the rail is already collapsed by the
+	// breakpoint). Here rather than in Sidebar because the now-playing view and the fullscreen
+	// lyrics panel are overlays that offset themselves by the sidebar's width.
+	sidebarCollapsed: browser && localStorage.getItem('sidebar_collapsed') === '1',
+	sidebarForceExpanded: false,
+	sidebarWidth: browser ? Math.min(420, Math.max(180, parseInt(localStorage.getItem('sidebar_width') || '240', 10) || 240)) : 240
+});
+
+export function setSidebarWidth(width: number) {
+	const clamped = Math.min(420, Math.max(180, Math.round(width)));
+	ui.sidebarWidth = clamped;
+	if (browser) localStorage.setItem('sidebar_width', clamped.toString());
+}
+
+export function openChannelPicker(required = false) {
+	ui.channelPickerRequired = required;
+	ui.channelIdentities = [];
+	ui.channelPickerOpen = true;
+}
+
+export function toggleSidebar() {
+	if (np.open && !np.fullscreenOpen) {
+		ui.sidebarForceExpanded = !ui.sidebarForceExpanded;
+	} else {
+		ui.sidebarCollapsed = !ui.sidebarCollapsed;
+		localStorage.setItem('sidebar_collapsed', ui.sidebarCollapsed ? '1' : '0');
+	}
+}
+
+export type Toast = { msg: string; kind: 'info' | 'success' | 'error' };
+
+// A counter, not the toast itself: $state proxies the stored object, so `ui.toast === t` is never
+// true and the toast would never clear. It also means a repeated message can't cut its own retry short.
+let seq = 0;
+
+function show(msg: string, kind: Toast['kind']) {
+	const id = ++seq;
+	ui.toast = { msg, kind };
+	setTimeout(() => {
+		if (seq === id) ui.toast = null;
+	}, 2500);
+}
+
+/** Sonner-shaped. Bare `toast(msg)` is a neutral notice; .success/.error pick the icon. */
+export const toast = Object.assign((msg: string) => show(msg, 'info'), {
+	info: (msg: string) => show(msg, 'info'),
+	success: (msg: string) => show(msg, 'success'),
+	error: (msg: string) => show(msg, 'error')
+});
+
+export function openShare(item: BrowseItem) {
+	ui.share = item;
+}
+
+export function openAddToPlaylist(song: SongItem | SongItem[]) {
+	ui.addSongs = Array.isArray(song) ? (song.length ? song : null) : [song];
+}
+
+/** Open the picker to add several tracks at once (e.g. a whole album). */
+export function openAddManyToPlaylist(songs: SongItem[]) {
+	ui.addSongs = songs.length ? songs : null;
+}
+
+// Last successful add-to-playlist — the open playlist page appends these optimistically.
+export const lastPlaylistAdd = $state({ playlistId: '', songs: [] as SongItem[], epoch: 0 });
+
+export function notePlaylistAdd(playlistId: string, songs: SongItem[]) {
+	lastPlaylistAdd.playlistId = playlistId;
+	// Strip per-context fields: set_video_id belongs to the source playlist, the queue markers to
+	// the queue — none apply to the row's new home.
+	lastPlaylistAdd.songs = songs.map((s) => ({
+		...s,
+		set_video_id: undefined,
+		added_by: undefined,
+		added_by_avatar: undefined,
+		autoplay: undefined,
+		queued: undefined,
+		queued_end: undefined,
+		queued_from: undefined,
+		queued_by: undefined
+	}));
+	lastPlaylistAdd.epoch++;
+}
+
+let started = false;
+
+/**
+ * Wire the Tauri event listeners once and seed initial state. Returns a teardown fn.
+ *
+ * `mini` is the floating-widget window (mini.rs): it runs this same module, and the events are
+ * emitted app-wide so it gets playback for free — but it has no library, no local tab, no account
+ * menu and no Listen Together UI, so it skips those fetches rather than duplicating the app's.
+ */
+export function initApp(mini = false): () => void {
+	if (started) return () => {};
+	started = true;
+	const subs = [
+		api.onNowPlaying((n) => {
+			playback.now = n;
+			playback.rating = n.rating ?? 'indifferent'; // the track's real rating when known
+			lyricsSync.currentOffsetMs = getLyricsOffset(n.videoId);
+			if (prefs.filterExplicit && n?.explicit) {
+				toast('Skipped explicit song');
+				api.nextTrack().catch(() => {});
+				return;
+			}
+			if (isArtistBlocked(n.artistId, n.artists)) {
+				toast(`Skipped track by blocked artist: ${n.artists}`);
+				api.nextTrack().catch(() => {});
+				return;
+			}
+			preloadQueueThumbnails(playback.queue);
+			// Feeds Shortcuts recency and the community shelf's artist seed. Every play lands here,
+			// gapless advances included, so it's the one hook that sees them all.
+			pl.touchPick(personal, n.videoId);
+			if (n.artists) pl.noteArtist(personal, n.artistId ?? n.artists, pl.firstArtist(n.artists));
+			savePersonal();
+			// Warm the music video now rather than when the view opens: the resolve is a round trip
+			// to YouTube, and paid here it overlaps the track starting instead of the user's click.
+			// Not in the mini player, which has no player view to show it in.
+			if (!mini && prefs.musicVideos && n.isVideo) videoUrlFor(n.videoId);
+		}),
+		// YouTube's own answer for a track whose row never stated one (issue #93). Into the
+		// override map as well as the player bar: the same song is on screen as a list row too,
+		// and `ratingOf` reads that map for every row that is not the playing one.
+		api.onRating((videoId, rating) => {
+			ratings[videoId] = rating;
+			capOverrides(ratings);
+			if (playback.now?.videoId === videoId) playback.rating = rating;
+		}),
+		api.onQueueChanged((q) => {
+			playback.queue = q;
+			preloadQueueThumbnails(q);
+		}),
+		// The items did not change, so keep the array we already hold and patch the rest. Splice
+		// the playing row back in: `start_current` backfills its duration and artists after the
+		// stream resolves, and that repair rides on this event rather than a whole new queue.
+		api.onQueueIndex((q) => {
+			const items = playback.queue.items;
+			if (q.current && items[q.currentIndex]) items[q.currentIndex] = q.current;
+			playback.queue = {
+				...playback.queue,
+				items,
+				currentIndex: q.currentIndex,
+				playedFrom: q.playedFrom,
+				shuffle: q.shuffle,
+				repeat: q.repeat,
+				sourceName: q.sourceName
+			};
+			preloadQueueThumbnails(playback.queue);
+		}),
+		api.onPosition((p) => {
+			playback.position = p;
+			playback.positionAt = performance.now();
+		}),
+		api.onDuration((d) => (playback.duration = d)),
+		api.onPlaybackState((s) => (playback.paused = s === 'paused')),
+		api.onVolume((v) => {
+			// Not while our own drag is in flight: the echo is a value the pointer has already
+			// moved past, and applying it would yank the thumb backwards mid-drag.
+			if (volFrame === null) playback.volume = v;
+		}),
+		api.onPlaybackError((msg) => toast.error(msg)),
+		api.onPlaybackNotice((msg) => toast(msg)), // auto-skipped an unplayable track
+		api.onCoverError((msg) => toast.error(msg)), // playlist artwork YouTube wouldn't take
+		api.onLocalChanged(forgetLocal), // a local file turned out to be gone — drop it everywhere
+		api.onAuthChanged((a) => {
+			auth.account = a;
+			resetLibraryForAccount();
+			// Signing out doesn't empty the library: On Repeat and anything saved on this machine
+			// are still there, and the backend answers both without touching YouTube.
+			if (!mini) {
+				loadLibrary(true);
+				loadSavedIndex();
+			}
+			if (!a.signedIn) {
+				ui.channelPickerOpen = false;
+				ui.channelPickerRequired = false;
+				ui.channelIdentities = [];
+			}
+			clearCached();
+			auth.epoch++;
+		}),
+		api.onAccountSelectionRequired(() => openChannelPicker(true)),
+		api.onLoginError((msg) => toast.error(msg)),
+		api.onLoginDone(() => toast.success('Signed in')),
+		// Listen Together (context/19): mirror the Rust session state; surface notices as toasts.
+		api.onLtState((s) => {
+			// A room is a shared clock, so tempo is off while one is on (the stepper hides itself).
+			// Dropping back to 1x here too, or a speed set before joining strands you off the beat
+			// with no visible control to undo it.
+			if (s.role !== 'none' && playback.speed !== 1) setTempoPitch(1, playback.semitones);
+			applyLtState(s);
+		}),
+		api.onLtNotice((msg) => toast(msg))
+	];
+	const teardown = () => subs.forEach((u) => u.then((f) => f()));
+	api.getQueue()
+		.then((q) => (playback.queue = q))
+		.catch(() => {});
+	// The events above are fire-and-forget, and this window missed every one that already fired:
+	// on a cold start the backend restores the queue before the UI subscribes, and the mini player
+	// is created mid-song. Ask for the current state once rather than guessing at it.
+	api.getPlayback()
+		.then((s) => {
+			playback.volume = s.volume; // before the guard below: the slider is stale either way
+			if (playback.now) return; // a real now-playing event beat us to it
+			playback.now = s.now;
+			playback.rating = s.now?.rating ?? 'indifferent';
+			playback.paused = s.paused;
+			playback.position = s.position;
+			playback.positionAt = performance.now();
+			playback.duration = s.duration;
+		})
+		.catch(() => {});
+	if (mini) return teardown;
+	api.getSettings()
+		.then((s) => {
+			prefs.musicVideos = s.music_videos === 'true';
+			prefs.filterExplicit = s.filter_explicit === 'true';
+			prefs.animatedArtwork = s.animated_artwork !== 'false';
+		})
+		.catch(() => {});
+	api.getAccount()
+		.then((a) => {
+			auth.account = a;
+			if (a.signedIn && a.selectionRequired) {
+				openChannelPicker(true);
+				return;
+			}
+			loadLibrary();
+			if (a.signedIn) {
+				// The crawl behind this is the app's only bulk request, so it runs once here (and
+				// on a sign-in), never on navigation. It settles into the background while the
+				// first page paints from the stored index.
+				loadSavedIndex();
+			}
+		})
+		.catch(() => {});
+	// Scan the local folders once at startup: it seeds the Library's Local tab and, more to the
+	// point, prunes shortcuts for music that was deleted while the app was closed.
+	scanLocal();
+	// Seed the Listen Together state (server URL, any active room after a UI reload).
+	api.ltGetState().then(applyLtState).catch(() => {});
+	void refreshSpotify();
+	return teardown;
+}

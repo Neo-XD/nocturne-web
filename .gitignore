@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build and cache
+build/
+.svelte-kit/
+.vite/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.log

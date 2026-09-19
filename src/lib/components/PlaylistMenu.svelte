@@ -1,0 +1,287 @@
+<script lang="ts">
+	// The ⋯ menu on a sidebar library row, a card, or an artist row. Positioned `fixed` and moved to
+	// <body> like TrackMenu: the playlist list is a scroll container, so an absolute popup would be
+	// clipped by it. Right-clicking the surrounding `[data-ctx]` element opens it at the pointer.
+	import { HugeiconsIcon } from '@hugeicons/svelte';
+	import {
+		MoreHorizontalIcon,
+		MoreVerticalIcon,
+		PlayIcon,
+		ShuffleIcon,
+		PinIcon,
+		PinOffIcon,
+		Radio02Icon,
+		ArrowUpNarrowWideIcon,
+		ArrowDownWideNarrowIcon,
+		BookmarkAdd02Icon,
+		BookmarkMinus02Icon,
+		DashboardSquare02Icon,
+		Share08Icon,
+		Folder01Icon
+	} from '@hugeicons/core-free-icons';
+	import * as api from '$lib/api';
+	import type { BrowseItem } from '$lib/api';
+	import { enqueueItem, playItem } from '$lib/browse';
+	import { anchorMenu, ctxHost, fitMenu, NO_ANCHOR, toBody } from '$lib/menu';
+	import {
+		addPick,
+		auth,
+		isSaved,
+		isSynced,
+		isItemSavedInLibrary,
+		openShare,
+		personal,
+		removePick,
+		startRadio,
+		toast,
+		togglePin,
+		toggleSaved,
+		toggleItemLibrary,
+		findPlaylistFolder
+	} from '$lib/player.svelte';
+	import AddToFolderDialog from './AddToFolderDialog.svelte';
+
+	let {
+		item,
+		showPin = true,
+		vertical = false,
+		iconClass = 'h-4 w-4',
+		// Visibility lives here too: most triggers only appear on hover, but a row that has nothing
+		// else to reveal on hover shows its ⋯ all the time.
+		triggerClass = 'absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 cursor-pointer items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-sidebar-accent hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100'
+	}: {
+		item: BrowseItem;
+		showPin?: boolean;
+		vertical?: boolean;
+		iconClass?: string;
+		triggerClass?: string;
+	} = $props();
+
+	const pinned = $derived(personal.pins.includes(item.id));
+	// Already on the home grid: the menu offers the way out rather than a second copy.
+	const isPick = $derived(personal.picks.some((p) => p.id === item.id));
+	// A synced row is on the account too, and dropping only the local copy would leave the card on
+	// screen with a "removed" toast under it. Signed out, the local copy is the whole library again.
+	const inLibrary = $derived(isItemSavedInLibrary(item));
+	// Radio and Share both need a YouTube item behind them: local folders and the locally-built
+	// On Repeat have none.
+	const onYouTube = $derived(!api.isLocalId(item.id) && item.id !== api.ON_REPEAT_ID);
+	// An artist isn't a track list — there's nothing unambiguous to queue. Songs, albums and
+	// playlists (local ones included) all are.
+	const canQueue = $derived(item.kind === 'song' || item.kind === 'album' || item.kind === 'playlist');
+
+	// The tracks have to be fetched before anything can be queued, so the menu stays open and the
+	// row shows it's working. Guards a second click from queueing the album twice.
+	let queueing = $state(false);
+	async function queue(next: boolean) {
+		if (queueing) return;
+		queueing = true;
+		try {
+			await enqueueItem(item, next);
+			menuOpen = false;
+		} finally {
+			queueing = false;
+		}
+	}
+
+	let menuOpen = $state(false);
+	let anchor = $state(NO_ANCHOR);
+	let folderDialogOpen = $state(false);
+	const folderForPlaylist = $derived(item.kind === 'playlist' ? findPlaylistFolder(item.id) : undefined);
+
+	// Click on the ⋯ opens under the button; right-click on the host card or row opens at the pointer.
+	function openMenu(e: MouseEvent) {
+		e.preventDefault(); // a right-click must not also raise WebKit's own menu
+		e.stopPropagation();
+		anchor = anchorMenu(e, { align: 'right' });
+		menuOpen = true;
+	}
+	// stopPropagation everywhere: the trigger sits over a clickable host (a card's whole surface is a
+	// play/navigate target), so its click must not reach the host's handler. The popup itself now
+	// lives at <body> and no longer bubbles into the host, but these stay: the trigger needs them.
+	function run(e: MouseEvent, action?: () => void) {
+		e.stopPropagation();
+		menuOpen = false;
+		action?.();
+	}
+	function play(e: MouseEvent, shuffle: boolean) {
+		e.stopPropagation();
+		menuOpen = false;
+		playItem(item, shuffle);
+	}
+
+	// Right-clicking off the menu dismisses it, same as a left click.
+	function close(e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		menuOpen = false;
+	}
+
+	async function downloadThisPlaylist() {
+		try {
+			toast.info(`Fetching tracks for "${item.title}"...`);
+			let tracks: api.SongItem[] = [];
+			if (item.kind === 'album') {
+				const album = await api.getAlbum(item.id);
+				tracks = album.items;
+			} else {
+				const playlist = await api.getPlaylist(item.id);
+				tracks = playlist.items;
+			}
+			if (!tracks.length) {
+				toast.error('No downloadable tracks found');
+				return;
+			}
+			toast.info(`Downloading ${tracks.length} tracks from "${item.title}"...`);
+			const dest = await api.downloadPlaylist({
+				items: tracks,
+				playlistName: item.title
+			});
+			toast.success(`Downloaded ${tracks.length} tracks to ${dest}`);
+		} catch (e) {
+			toast.error(`Playlist download failed: ${e}`);
+		}
+	}
+</script>
+
+<button
+	class="{triggerClass} {menuOpen ? 'opacity-100' : ''}"
+	onclick={openMenu}
+	aria-label="Playlist options"
+	{@attach ctxHost(openMenu)}
+>
+	<!-- icon swap via altIcon/showAlt — `icon` is frozen at mount -->
+	<HugeiconsIcon
+		icon={MoreHorizontalIcon}
+		altIcon={MoreVerticalIcon}
+		showAlt={vertical}
+		class={iconClass}
+	/>
+</button>
+
+{#if menuOpen}
+	<button
+		class="fixed inset-0 z-40 cursor-default"
+		onclick={close}
+		oncontextmenu={close}
+		aria-label="Close menu"
+		{@attach toBody}
+	></button>
+	<div
+		class="fixed z-50 min-w-48 animate-in rounded-lg border border-border/80 bg-popover/85 p-1 text-popover-foreground shadow-2xl backdrop-blur-2xl duration-150 fade-in-0 zoom-in-95"
+		style={anchor.style}
+		{@attach toBody}
+		{@attach fitMenu(anchor)}
+	>
+		{#if item.kind === 'album' || item.kind === 'playlist'}
+			<div class="flex items-center rounded-md hover:bg-accent/10">
+				<button
+					class="flex flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-primary"
+					onclick={(e) => play(e, false)}
+				>
+					<HugeiconsIcon icon={PlayIcon} class="h-4 w-4" /> Play
+				</button>
+				<button
+					class="mr-1 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-accent/20"
+					title="Shuffle play"
+					aria-label="Shuffle play"
+					onclick={(e) => play(e, true)}
+				>
+					<HugeiconsIcon icon={ShuffleIcon} class="h-4 w-4" />
+				</button>
+			</div>
+		{/if}
+		{#if showPin}
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10"
+				onclick={(e) => run(e, () => togglePin(item.id))}
+			>
+				<HugeiconsIcon icon={pinned ? PinOffIcon : PinIcon} class="h-4 w-4" />
+				{pinned ? 'Unpin' : 'Pin to top'}
+			</button>
+		{/if}
+		{#if canQueue}
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10 disabled:opacity-50"
+				disabled={queueing}
+				onclick={(e) => {
+					e.stopPropagation();
+					queue(true);
+				}}
+			>
+				<HugeiconsIcon icon={ArrowUpNarrowWideIcon} class="h-4 w-4" /> Play next
+			</button>
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10 disabled:opacity-50"
+				disabled={queueing}
+				onclick={(e) => {
+					e.stopPropagation();
+					queue(false);
+				}}
+			>
+				<HugeiconsIcon icon={ArrowDownWideNarrowIcon} class="h-4 w-4" /> Add to queue
+			</button>
+		{/if}
+		{#if onYouTube}
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10"
+				onclick={(e) => run(e, () => startRadio(item.kind as 'artist' | 'album' | 'playlist', item.id, item.title))}
+			>
+				<HugeiconsIcon icon={Radio02Icon} class="h-4 w-4" /> Start radio
+			</button>
+		{/if}
+		{#if item.kind === 'album' || item.kind === 'playlist'}
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10"
+				onclick={(e) => run(e, downloadThisPlaylist)}
+			>
+				<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+				</svg>
+				Download {item.kind === 'album' ? 'album' : 'playlist'}
+			</button>
+		{/if}
+		<button
+			class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10"
+			onclick={(e) => run(e, () => (isPick ? removePick(item.id) : addPick(item)))}
+		>
+			<HugeiconsIcon icon={DashboardSquare02Icon} class="h-4 w-4" />
+			{isPick ? 'Remove from shortcuts' : 'Add to shortcuts'}
+		</button>
+		{#if onYouTube}
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10"
+				onclick={(e) => run(e, () => openShare(item))}
+			>
+				<HugeiconsIcon icon={Share08Icon} class="h-4 w-4" /> Share
+			</button>
+		{/if}
+		{#if item.kind === 'playlist'}
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10"
+				onclick={(e) => run(e, () => (folderDialogOpen = true))}
+			>
+				<HugeiconsIcon icon={Folder01Icon} class="h-4 w-4" />
+				{folderForPlaylist ? `Folder (${folderForPlaylist.name})` : 'Add to folder'}
+			</button>
+		{/if}
+		{#if onYouTube || api.isLocalId(item.id)}
+			<button
+				class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/10"
+				onclick={(e) => run(e, () => toggleItemLibrary(item))}
+			>
+				<HugeiconsIcon
+					icon={BookmarkAdd02Icon}
+					altIcon={BookmarkMinus02Icon}
+					showAlt={inLibrary}
+					class="h-4 w-4"
+				/>
+				{inLibrary ? 'Remove from library' : 'Save to library'}
+			</button>
+		{/if}
+	</div>
+{/if}
+
+{#if item.kind === 'playlist'}
+	<AddToFolderDialog bind:open={folderDialogOpen} playlist={item} />
+{/if}
