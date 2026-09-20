@@ -20,7 +20,6 @@
 	import { suppressNative } from '$lib/menu';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import Titlebar from '$lib/components/Titlebar.svelte';
-	import ResizeBorders from '$lib/components/ResizeBorders.svelte';
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
 	import QueuePanel from '$lib/components/QueuePanel.svelte';
 	import LyricsPanel from '$lib/components/LyricsPanel.svelte';
@@ -252,7 +251,6 @@
 			</div>
 		{/if}
 
-		<ResizeBorders />
 		<Titlebar />
 		<!-- relative: the queue and lyrics panels are absolute overlays inside it (see QueuePanel). -->
 		<div class="relative z-10 flex min-h-0 flex-1">
@@ -312,8 +310,6 @@
 					queueOpen={tabbed ? np.tab === 'queue' : queueOpen}
 					onToggleLyrics={() => toggleRightSidebar('lyrics')}
 					lyricsOpen={tabbed ? np.tab === 'lyrics' : lyricsOpen}
-					onToggleDevices={() => toggleRightSidebar('devices')}
-					devicesOpen={devicesOpen}
 					onToggleNowPlayingSidebar={() => toggleRightSidebar('np')}
 				/>
 			</div>

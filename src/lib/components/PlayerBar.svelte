@@ -464,17 +464,6 @@
 					<HugeiconsIcon icon={Queue01Icon} class="h-5 w-5" />
 				</Button>
 			{/if}
-			{#if onToggleDevices && prefs.visibleIcons.playerbar.devices}
-				<Button
-					variant={devicesOpen ? 'secondary' : 'ghost'}
-					size="icon-sm"
-					onclick={onToggleDevices}
-					aria-label="Connect to a device"
-					title="Connect to a device"
-				>
-					<SpeakerIcon class="h-5 w-5" />
-				</Button>
-			{/if}
 			<!-- The keyboard (and discoverable) way in and out of the now-playing view; clicking the
 			     bar's empty space does the same thing. -->
 			{#if prefs.visibleIcons.playerbar.fullscreen}
