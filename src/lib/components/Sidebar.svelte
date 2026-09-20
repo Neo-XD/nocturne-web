@@ -188,7 +188,7 @@
 
 <aside
 	style="{prefs.floatingSidebarLeft ? 'height: calc(100% - 1rem);' : 'height: 100%;'} width: {collapsed ? '4rem' : `${ui.sidebarWidth}px`};"
-	class="relative z-30 flex shrink-0 flex-col bg-sidebar p-3 text-sidebar-foreground transition-[border-radius,margin] duration-200 {prefs.floatingSidebarLeft
+	class="relative z-30 hidden md:flex shrink-0 flex-col bg-sidebar p-3 text-sidebar-foreground transition-[border-radius,margin] duration-200 {prefs.floatingSidebarLeft
 		? 'app-floating-panel m-2 rounded-2xl border border-border/70 shadow-xl backdrop-blur-xl bg-sidebar/80'
 		: 'border-r border-border/70 rounded-none m-0 shadow-none'}"
 >

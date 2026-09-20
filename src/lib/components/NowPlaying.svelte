@@ -101,7 +101,7 @@
 <div
 	transition:fly={{ y: '100%', duration: 320, easing: cubicOut }}
 	style="padding-left: {leftPadding}px;"
-	class="fixed inset-0 z-20 flex justify-center overflow-hidden bg-background px-4 pt-14 pb-24 sm:px-6 sm:pt-16 sm:pb-28 lg:px-10 {inset}"
+	class="fixed inset-0 z-20 hidden md:flex justify-center overflow-hidden bg-background px-4 pt-14 pb-24 sm:px-6 sm:pt-16 sm:pb-28 lg:px-10 {inset}"
 >
 	<!-- The artwork itself, blurred to a wash, is the background: same trick as HomeHero, and it
 	     needs no colour extraction (which a remote image would taint the canvas for anyway). The

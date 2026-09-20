@@ -198,11 +198,12 @@
 
 	<!-- Centered sticky search bar -->
 	{#if prefs.visibleIcons.titlebar.search}
-		<div data-tauri-drag-region class="flex flex-1 justify-center mx-2 min-w-0">
+		<div data-tauri-drag-region class="hidden md:flex flex-1 justify-center mx-2 min-w-0">
 			<div class="w-full max-w-[340px]">
 				<TopSearchBar />
 			</div>
 		</div>
+		<div data-tauri-drag-region class="flex-1 md:hidden"></div>
 	{:else}
 		<div data-tauri-drag-region class="flex-1"></div>
 	{/if}
@@ -217,13 +218,13 @@
 		>
 			<HugeiconsIcon icon={Settings01Icon} class="h-4 w-4" />
 		</button>
-		<div data-tauri-drag-region class="mx-1.5 h-4 w-px bg-border"></div>
+		<div data-tauri-drag-region class="mx-1.5 h-4 w-px bg-border hidden md:block"></div>
 
 		<!-- Paste a YouTube Music link and go to it: the only way into a playlist that is shared by
 		     link and never appears in search or the library (#63). -->
 		{#if prefs.visibleIcons.titlebar.openLink}
 			<button
-				class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground"
+				class="hidden md:flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground"
 				onclick={() => (ui.linkOpen = true)}
 				title="Open link"
 				aria-label="Open link"
@@ -235,7 +236,7 @@
 		<!-- Opens the same modal as the home hero's button (one dialog, mounted in +layout). -->
 		{#if prefs.visibleIcons.titlebar.listenTogether}
 			<button
-				class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {lt.role !==
+				class="hidden md:flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {lt.role !==
 				'none'
 					? 'text-primary'
 					: ''}"
@@ -265,7 +266,7 @@
 
 		{#if prefs.visibleIcons.titlebar.discord}
 			<button
-				class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {discordOn
+				class="hidden md:flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {discordOn
 					? 'text-foreground'
 					: ''}"
 				onclick={toggleDiscord}
@@ -286,7 +287,7 @@
 
 		{#if prefs.visibleIcons.titlebar.lastfm}
 			<button
-				class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {connected
+				class="hidden md:flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {connected
 					? 'text-foreground'
 					: ''}"
 				onclick={onScrobblerClick}
@@ -318,7 +319,7 @@
 		     you're using, not the size of this window. -->
 		{#if prefs.visibleIcons.titlebar.miniPlayer}
 			<button
-				class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground"
+				class="hidden md:flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground"
 				onclick={openMiniPlayer}
 				title="Mini player"
 				aria-label="Mini player"
@@ -330,7 +331,7 @@
 		<!-- Fullscreen player (F11) -->
 		{#if prefs.visibleIcons.titlebar.fullscreen}
 			<button
-				class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {np.fullscreenOpen
+				class="hidden md:flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {np.fullscreenOpen
 					? 'text-primary'
 					: ''}"
 				onclick={() => (np.fullscreenOpen = !np.fullscreenOpen)}
@@ -344,7 +345,7 @@
 		<!-- Theme mode toggle -->
 		{#if prefs.visibleIcons.titlebar.mode !== false}
 			<button
-				class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground cursor-pointer"
+				class="hidden md:flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground cursor-pointer"
 				onclick={toggleMode}
 				title="Toggle theme mode"
 				aria-label="Toggle theme mode"

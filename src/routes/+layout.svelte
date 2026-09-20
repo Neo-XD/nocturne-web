@@ -39,6 +39,9 @@
 	import FullscreenPlayer from '$lib/components/FullscreenPlayer.svelte';
 	import AnimatedArtwork from '$lib/components/AnimatedArtwork.svelte';
 	import VideoSurface from '$lib/components/VideoSurface.svelte';
+	import MobileNav from '$lib/components/MobileNav.svelte';
+	import MobilePlayerBar from '$lib/components/MobilePlayerBar.svelte';
+	import MobilePlayer from '$lib/components/MobilePlayer.svelte';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
 	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -266,7 +269,7 @@
 			<Sidebar />
 			<!-- dragScroll: dragging a card up to home's Shortcuts grid has to be possible from anywhere in
 			     the feed, so aiming at the top edge scrolls this container while the drag is in flight. -->
-			<main class="min-w-0 flex-1 overflow-y-auto" {@attach dragScroll}>
+			<main class="min-w-0 flex-1 overflow-y-auto {playback.now ? 'pb-32 md:pb-0' : 'pb-16 md:pb-0'}" {@attach dragScroll}>
 				<!-- Remount the current page on sign-in/out so it refetches with the new account. -->
 				{#key auth.epoch}
 					{@render children()}
@@ -276,7 +279,10 @@
 			     has to keep playing while the view is closed. It renders nothing but a zero-sized
 			     parking container until the view borrows the picture. -->
 			<VideoSurface />
-			{#if np.open && playback.now}<NowPlaying {queueOpen} {lyricsOpen} />{/if}
+			{#if np.open && playback.now}
+				<NowPlaying {queueOpen} {lyricsOpen} />
+				<MobilePlayer />
+			{/if}
 			{#if activeRightSidebar && (activeRightSidebar !== 'np' || (playback.now && !np.open))}
 				<div
 					class="relative z-20 flex h-full shrink-0 flex-col overflow-hidden {isResizingSidebar
@@ -313,7 +319,7 @@
 			{/if}
 		</div>
 		{#if playback.now}
-			<div class="relative z-30" transition:fly={{ y: 64, duration: 200, easing: cubicOut }}>
+			<div class="relative z-30 hidden md:block" transition:fly={{ y: 64, duration: 200, easing: cubicOut }}>
 				<PlayerBar
 					onToggleQueue={() => toggleRightSidebar('queue')}
 					queueOpen={tabbed ? np.tab === 'queue' : queueOpen}
@@ -323,6 +329,12 @@
 				/>
 			</div>
 		{/if}
+
+		<!-- Mobile Player Bar (docked mini-player) -->
+		<MobilePlayerBar />
+
+		<!-- Mobile Bottom Navigation (Home | Library | Search) -->
+		<MobileNav />
 	</div>
 
 	<CommandPalette />
