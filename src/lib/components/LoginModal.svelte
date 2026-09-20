@@ -4,8 +4,7 @@
 		signInWithGoogleOAuth,
 		getStoredOAuthSession,
 		clearOAuthSession,
-		getGoogleClientId,
-		setGoogleClientId
+		getGoogleClientId
 	} from '$lib/oauth';
 	import { ytmGetAccount, setStoredCookie } from '$lib/ytmusic';
 	import { emitWebEvent } from '$lib/webEngine';
@@ -17,13 +16,9 @@
 		UserIcon,
 		CheckmarkCircle02Icon,
 		Alert02Icon,
-		Settings02Icon,
-		SecurityCheckIcon,
 		Logout01Icon
 	} from '@hugeicons/core-free-icons';
 
-	let clientIdInput = $state(getGoogleClientId());
-	let showClientConfig = $state(!getGoogleClientId());
 	let cookieInput = $state('');
 	let showCookieOption = $state(false);
 
@@ -33,19 +28,10 @@
 
 	let currentSession = $derived(getStoredOAuthSession());
 
-	function saveClientId() {
-		setGoogleClientId(clientIdInput.trim());
-		if (clientIdInput.trim()) {
-			showClientConfig = false;
-			error = null;
-		}
-	}
-
 	async function handleGoogleOAuth() {
 		const cid = getGoogleClientId();
 		if (!cid) {
-			showClientConfig = true;
-			error = 'Please enter your Google OAuth Client ID first.';
+			error = 'Google OAuth Client ID is not configured.';
 			return;
 		}
 
@@ -234,38 +220,7 @@
 							{/if}
 						</Button>
 
-						<!-- Google Client ID Setup -->
-						<div class="pt-1">
-							<button
-								type="button"
-								class="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
-								onclick={() => (showClientConfig = !showClientConfig)}
-							>
-								<HugeiconsIcon icon={Settings02Icon} class="size-3" />
-								<span>{showClientConfig ? 'Hide' : 'Configure'} Google Client ID</span>
-							</button>
 
-							{#if showClientConfig}
-								<div class="mt-2.5 p-3 rounded-lg border border-border/70 bg-background/60 space-y-2 text-xs">
-									<label for="client-id-input" class="text-[11px] text-muted-foreground font-medium block">
-										Google OAuth Web Client ID:
-									</label>
-									<div class="flex gap-1.5">
-										<input
-											id="client-id-input"
-											type="text"
-											bind:value={clientIdInput}
-											placeholder="123456789-abc.apps.googleusercontent.com"
-											class="flex-1 text-xs font-mono rounded border border-input bg-background px-2.5 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-										/>
-										<Button size="sm" variant="secondary" onclick={saveClientId}>Save</Button>
-									</div>
-									<p class="text-[10px] text-muted-foreground leading-normal">
-										Created in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" class="underline hover:text-primary">Google Cloud Console</a> with your origin added under <em>Authorized JavaScript origins</em>.
-									</p>
-								</div>
-							{/if}
-						</div>
 					</div>
 
 					<!-- Status notifications -->
