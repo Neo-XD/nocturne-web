@@ -15,7 +15,8 @@
 		Add01Icon,
 		Mic01Icon,
 		Queue01Icon,
-		MusicNote01Icon
+		MusicNote01Icon,
+		Download01Icon
 	} from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
 	import {
@@ -23,7 +24,8 @@
 		playback,
 		cycleRepeat,
 		openAddToPlaylist,
-		toggleNowPlayingLike
+		toggleNowPlayingLike,
+		toast
 	} from '$lib/player.svelte';
 	import { appearance } from '$lib/theme.svelte';
 	import { thumb } from '$lib/thumb';
@@ -32,10 +34,33 @@
 
 	let tab = $state<'cover' | 'lyrics' | 'queue'>('cover');
 	let justLiked = $state(false);
+	let downloading = $state(false);
 
 	function toggleLike() {
 		if (playback.rating !== 'like') justLiked = true;
 		toggleNowPlayingLike();
+	}
+
+	async function handleDownload() {
+		const now = playback.now;
+		if (!now?.videoId) return;
+		downloading = true;
+		try {
+			toast.info(`Downloading "${now.title || 'song'}"...`);
+			await api.downloadSong({
+				videoId: now.videoId,
+				title: now.title || 'track',
+				artist: now.artists || 'Unknown Artist'
+			});
+			toast.success('Download started');
+		} catch (e) {
+			console.warn('Download error:', e);
+			toast.error('Download failed');
+		} finally {
+			setTimeout(() => {
+				downloading = false;
+			}, 2000);
+		}
 	}
 
 	const fmt = (secs: number) => {
@@ -82,23 +107,26 @@
 		transition:fly={{ y: '100%', duration: 280, easing: cubicOut }}
 		class="fixed inset-0 z-50 flex flex-col md:hidden bg-background text-foreground overflow-hidden select-none"
 	>
-		<!-- Blurred Ambient Artwork Background -->
-		{#if appearance.artworkBackground && playback.now.thumbnail}
-			<img
-				src={thumb(playback.now.thumbnail, 400)}
-				alt=""
-				class="pointer-events-none absolute inset-0 h-full w-full scale-135 object-cover opacity-35 blur-3xl"
-			/>
-			<div class="absolute inset-0 bg-background/80 dark:bg-background/85"></div>
+		<!-- Vibrant Blurred Ambient Artwork Background -->
+		{#if playback.now?.thumbnail}
+			<div class="pointer-events-none absolute inset-0 overflow-hidden">
+				<img
+					src={thumb(playback.now.thumbnail, 400)}
+					alt=""
+					class="absolute -inset-10 h-[calc(100%+5rem)] w-[calc(100%+5rem)] object-cover opacity-50 dark:opacity-40 blur-3xl saturate-150 scale-125 transition-all duration-700"
+				/>
+				<div class="absolute inset-0 bg-gradient-to-b from-background/70 via-background/80 to-background/95 dark:from-background/60 dark:via-background/80 dark:to-background/95 backdrop-blur-2xl"></div>
+			</div>
 		{/if}
 
-		<!-- Top Bar: Minimize Button + Header Title + Add to Playlist -->
+		<!-- Top Bar: Minimize Button + Header Title + Download + Add to Playlist -->
 		<header class="relative z-10 flex h-14 shrink-0 items-center justify-between px-3 pt-1">
 			<button
 				type="button"
 				class="flex size-10 items-center justify-center rounded-full text-foreground/80 hover:bg-muted/40 active:scale-95 transition cursor-pointer"
 				onclick={() => (np.open = false)}
 				aria-label="Minimize player"
+				title="Minimize"
 			>
 				<HugeiconsIcon icon={ArrowDown01Icon} class="h-6 w-6" />
 			</button>
@@ -109,26 +137,44 @@
 				</div>
 			</div>
 
-			<button
-				type="button"
-				class="flex size-10 items-center justify-center rounded-full text-foreground/80 hover:bg-muted/40 active:scale-95 transition cursor-pointer"
-				onclick={() => {
-					const now = playback.now;
-					if (now) {
-						openAddToPlaylist({
-							video_id: now.videoId,
-							title: now.title,
-							artists: now.artists,
-							artist_id: now.artistId,
-							thumbnail: now.thumbnail,
-							duration: now.duration
-						});
-					}
-				}}
-				aria-label="Add to playlist"
-			>
-				<HugeiconsIcon icon={Add01Icon} class="h-5 w-5" />
-			</button>
+			<div class="flex items-center gap-0.5 shrink-0">
+				<!-- Download Button in Header -->
+				<button
+					type="button"
+					class="flex size-10 items-center justify-center rounded-full text-foreground/80 hover:bg-muted/40 active:scale-95 transition cursor-pointer"
+					onclick={handleDownload}
+					aria-label="Download track"
+					title="Download track"
+				>
+					{#if downloading}
+						<div class="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+					{:else}
+						<HugeiconsIcon icon={Download01Icon} class="h-5 w-5" />
+					{/if}
+				</button>
+
+				<!-- Add to playlist -->
+				<button
+					type="button"
+					class="flex size-10 items-center justify-center rounded-full text-foreground/80 hover:bg-muted/40 active:scale-95 transition cursor-pointer"
+					onclick={() => {
+						const now = playback.now;
+						if (now) {
+							openAddToPlaylist({
+								video_id: now.videoId,
+								title: now.title,
+								artists: now.artists,
+								artist_id: now.artistId,
+								thumbnail: now.thumbnail,
+								duration: now.duration
+							});
+						}
+					}}
+					aria-label="Add to playlist"
+				>
+					<HugeiconsIcon icon={Add01Icon} class="h-5 w-5" />
+				</button>
+			</div>
 		</header>
 
 		<!-- Main Content Area -->
@@ -173,7 +219,7 @@
 						</button>
 					</div>
 
-					<!-- Track Info & Like Button -->
+					<!-- Track Info, Download & Like Button -->
 					<div class="flex items-center justify-between gap-3 pt-2 pb-1">
 						<div class="min-w-0 flex-1">
 							<h2 class="truncate text-lg font-bold tracking-tight text-foreground">
@@ -184,25 +230,42 @@
 							</p>
 						</div>
 
-						{#if !api.isLocalId(playback.now.videoId)}
+						<div class="flex items-center gap-1 shrink-0">
+							<!-- Direct Download Button -->
 							<button
 								type="button"
 								class="flex size-10 items-center justify-center rounded-full text-muted-foreground hover:text-foreground active:scale-90 transition cursor-pointer"
-								onclick={toggleLike}
-								aria-label="Like track"
+								onclick={handleDownload}
+								aria-label="Download track"
+								title="Download track"
 							>
-								<span
-									class="inline-flex"
-									class:animate-heart-pop={justLiked}
-									onanimationend={() => (justLiked = false)}
-								>
-									<HugeiconsIcon
-										icon={FavouriteIcon}
-										class="h-6 w-6 {playback.rating === 'like' ? 'fill-current text-primary' : ''}"
-									/>
-								</span>
+								{#if downloading}
+									<div class="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+								{:else}
+									<HugeiconsIcon icon={Download01Icon} class="h-5 w-5" />
+								{/if}
 							</button>
-						{/if}
+
+							{#if !api.isLocalId(playback.now.videoId)}
+								<button
+									type="button"
+									class="flex size-10 items-center justify-center rounded-full text-muted-foreground hover:text-foreground active:scale-90 transition cursor-pointer"
+									onclick={toggleLike}
+									aria-label="Like track"
+								>
+									<span
+										class="inline-flex"
+										class:animate-heart-pop={justLiked}
+										onanimationend={() => (justLiked = false)}
+									>
+										<HugeiconsIcon
+											icon={FavouriteIcon}
+											class="h-6 w-6 {playback.rating === 'like' ? 'fill-current text-primary' : ''}"
+										/>
+									</span>
+								</button>
+							{/if}
+						</div>
 					</div>
 
 					<!-- Seekbar & Timestamps -->
@@ -298,10 +361,10 @@
 				</div>
 			{:else if tab === 'lyrics'}
 				<div class="flex h-full flex-col overflow-hidden py-2" in:fade={{ duration: 150 }}>
-					<LyricsView expanded={true} />
+					<LyricsView expanded={false} />
 				</div>
 			{:else if tab === 'queue'}
-				<div class="flex h-full flex-col overflow-hidden py-2" in:fade={{ duration: 150 }}>
+				<div class="flex h-full flex-col overflow-y-auto px-1 py-2" in:fade={{ duration: 150 }}>
 					<QueueList />
 				</div>
 			{/if}

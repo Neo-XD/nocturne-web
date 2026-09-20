@@ -186,7 +186,7 @@
 		{#if !prefs.homeInSidebar}
 			<a
 				href="/"
-				class="flex h-full w-8 items-center justify-center text-foreground/80 transition-colors hover:bg-accent/10 hover:text-foreground {page.url.pathname === '/' ? 'text-primary' : ''}"
+				class="hidden md:flex h-full w-8 items-center justify-center text-foreground/80 transition-colors hover:bg-accent/10 hover:text-foreground {page.url.pathname === '/' ? 'text-primary' : ''}"
 				title="Home"
 				aria-label="Home"
 			>

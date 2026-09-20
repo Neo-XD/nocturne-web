@@ -259,7 +259,7 @@
 				</button>
 			{:else}
 				<kbd
-					class="pointer-events-none rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 font-mono text-[9px] font-medium text-muted-foreground select-none transition-opacity duration-200"
+					class="pointer-events-none hidden md:inline-flex rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 font-mono text-[9px] font-medium text-muted-foreground select-none transition-opacity duration-200"
 				>
 					{formatKey(keybindings.search)}
 				</kbd>

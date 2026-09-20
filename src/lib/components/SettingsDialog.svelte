@@ -1396,14 +1396,14 @@
 <svelte:window onkeydown={recordingAction ? onKeyRecord : undefined} />
 
 <Dialog.Root bind:open={ui.settingsOpen}>
-	<Dialog.Content class="settings-dialog gap-0 overflow-hidden p-0 transition-all duration-200 border border-border/80 shadow-2xl {isMaximized ? 'w-[98vw] max-w-[98vw] sm:max-w-[98vw] lg:max-w-[98vw] xl:max-w-[98vw] h-[96vh] max-h-[96vh] rounded-xl' : 'w-[94vw] sm:max-w-4xl lg:max-w-5xl xl:max-w-[70rem] h-[min(46rem,86vh)] max-h-[86vh] rounded-2xl'}">
+	<Dialog.Content class="settings-dialog gap-0 overflow-hidden p-0 transition-all duration-200 border border-border/80 shadow-2xl {isMaximized ? 'w-[98vw] max-w-[98vw] sm:max-w-[98vw] lg:max-w-[98vw] xl:max-w-[98vw] h-[96vh] max-h-[96vh] rounded-xl' : 'w-[96vw] max-w-[96vw] sm:max-w-4xl lg:max-w-5xl xl:max-w-[70rem] h-[92vh] sm:h-[min(46rem,86vh)] max-h-[92vh] sm:max-h-[86vh] rounded-2xl'}">
 		<Dialog.Description class="sr-only">Application settings</Dialog.Description>
 
 		<!-- Maximize / Restore window button placed next to Close button -->
 		<Button
 			variant="ghost"
 			size="icon-sm"
-			class="absolute top-4 right-12 z-50 text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+			class="absolute top-3 md:top-4 right-10 md:right-12 z-50 text-muted-foreground hover:text-foreground cursor-pointer transition-colors hidden sm:inline-flex"
 			onclick={toggleMaximize}
 			title={isMaximized ? "Restore settings window" : "Maximize settings window"}
 			aria-label={isMaximized ? "Restore" : "Maximize"}
@@ -1411,34 +1411,39 @@
 			<HugeiconsIcon icon={isMaximized ? MinimizeScreenIcon : SquareIcon} size={15} strokeWidth={2} />
 		</Button>
 
-		<div class="flex h-full min-h-0 overflow-hidden">
+		<div class="flex flex-col md:flex-row h-full min-h-0 overflow-hidden">
 			<!-- Tab rail -->
-			<nav class="settings-nav-rail flex w-60 shrink-0 flex-col border-r border-border/30 p-3.5 backdrop-blur-3xl min-h-0 overflow-y-auto">
-				<Dialog.Title class="px-3 pt-3 pb-4 font-heading text-base font-semibold text-foreground">
-					Settings
-				</Dialog.Title>
-				<div class="flex flex-col gap-0.5">
+			<nav class="settings-nav-rail flex w-full md:w-60 shrink-0 flex-col border-b md:border-b-0 md:border-r border-border/30 p-2.5 md:p-3.5 backdrop-blur-3xl min-h-0">
+				<div class="flex items-center justify-between px-2 pt-1 pb-2 md:pt-3 md:pb-4">
+					<Dialog.Title class="font-heading text-sm md:text-base font-semibold text-foreground">
+						Settings
+					</Dialog.Title>
+					{#if version}
+						<span class="text-[10px] text-muted-foreground md:hidden">v{version}</span>
+					{/if}
+				</div>
+				<div class="flex flex-row md:flex-col gap-1 md:gap-0.5 overflow-x-auto md:overflow-x-visible pb-1 md:pb-0 [scrollbar-width:none]">
 					{#each TABS as t (t.id)}
 						<button
 							onclick={() => (tab = t.id)}
 							aria-current={tab === t.id}
-							class="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors {tab ===
+							class="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 md:px-3 md:py-2 text-left text-xs md:text-sm font-medium transition-colors {tab ===
 							t.id
-								? 'bg-white/15 dark:bg-white/10 text-foreground shadow-xs ring-1 ring-white/10 font-semibold'
+								? 'bg-primary/15 md:bg-white/15 dark:bg-primary/20 md:dark:bg-white/10 text-primary md:text-foreground shadow-xs ring-1 ring-primary/30 md:ring-white/10 font-semibold'
 								: 'text-muted-foreground hover:bg-white/5 hover:text-foreground'}"
 						>
 							<HugeiconsIcon
 								icon={t.icon}
-								size={17}
+								size={16}
 								strokeWidth={2}
 								class={tab === t.id ? 'text-primary' : ''}
 							/>
-							<span class="truncate">{t.label}</span>
+							<span class="whitespace-nowrap md:truncate">{t.label}</span>
 						</button>
 					{/each}
 				</div>
 				{#if version}
-					<span class="mt-auto px-3 pb-1 text-[11px] text-muted-foreground">v{version}</span>
+					<span class="mt-auto px-3 pb-1 text-[11px] text-muted-foreground hidden md:block">v{version}</span>
 				{/if}
 			</nav>
 
@@ -1447,16 +1452,16 @@
 			<div class="settings-content-pane relative flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
 				<!-- Header with generous top padding matching desired.png and no dividing border -->
 				<header
-					class="shrink-0 px-8 pt-8 pb-3 pr-24 cursor-default select-none"
+					class="shrink-0 px-4 md:px-8 pt-3 md:pt-8 pb-2 md:pb-3 pr-12 md:pr-24 cursor-default select-none"
 					ondblclick={toggleMaximize}
 				>
-					<h2 class="text-base font-bold tracking-tight text-foreground">{currentTab.label}</h2>
-					<p class="mt-0.5 truncate text-xs text-muted-foreground">{currentTab.hint}</p>
+					<h2 class="text-sm md:text-base font-bold tracking-tight text-foreground">{currentTab.label}</h2>
+					<p class="mt-0.5 truncate text-[11px] md:text-xs text-muted-foreground">{currentTab.hint}</p>
 				</header>
 
 				<div
 					bind:this={settingsScrollEl}
-					class="relative min-w-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-8 {tab === 'themes' ? 'pr-14' : ''} pb-12"
+					class="relative min-w-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 md:px-8 {tab === 'themes' ? 'md:pr-14' : ''} pb-10 md:pb-12"
 					onscroll={(e) => {
 						if (tab !== 'themes') return;
 						const target = e.currentTarget;

@@ -6,6 +6,7 @@
 		LibraryIcon,
 		Search01Icon
 	} from '@hugeicons/core-free-icons';
+	import { np } from '$lib/player.svelte';
 
 	const isHome = $derived(page.url.pathname === '/');
 	const isLibrary = $derived(
@@ -17,6 +18,7 @@
 	const isSearch = $derived(page.url.pathname.startsWith('/search'));
 </script>
 
+{#if !np.open}
 <nav
 	class="fixed bottom-0 left-0 right-0 z-40 flex h-14 md:hidden items-center justify-around border-t border-border/70 bg-background/90 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]"
 	aria-label="Mobile Navigation"
@@ -57,3 +59,4 @@
 		<span class="text-[10px] tracking-tight">Search</span>
 	</a>
 </nav>
+{/if}

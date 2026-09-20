@@ -156,7 +156,7 @@
 		</button>
 	{:else}
 		<kbd
-			class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rounded border bg-muted px-1.5 py-0.5 font-mono text-[0.625rem] font-medium tracking-wide text-muted-foreground"
+			class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 hidden md:inline-flex rounded border bg-muted px-1.5 py-0.5 font-mono text-[0.625rem] font-medium tracking-wide text-muted-foreground"
 		>
 			{formatKey(keybindings.search)}
 		</kbd>

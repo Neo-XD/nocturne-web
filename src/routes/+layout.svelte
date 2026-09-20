@@ -285,7 +285,7 @@
 			{/if}
 			{#if activeRightSidebar && (activeRightSidebar !== 'np' || (playback.now && !np.open))}
 				<div
-					class="relative z-20 flex h-full shrink-0 flex-col overflow-hidden {isResizingSidebar
+					class="relative z-20 hidden md:flex h-full shrink-0 flex-col overflow-hidden {isResizingSidebar
 						? 'transition-none'
 						: 'transition-[width] duration-250 ease-out'}"
 					style="width: {currentSidebarWidth}px;"
