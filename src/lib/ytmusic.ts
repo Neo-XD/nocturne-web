@@ -10,6 +10,7 @@ import type {
 	SearchResults,
 	SongItem
 } from './api';
+import { getStoredOAuthSession, fetchOAuthPlaylistPage } from './oauth';
 
 const YTM_CLIENT_CONTEXT = {
 	client: {
@@ -43,6 +44,10 @@ async function postYtm(endpoint: string, body: Record<string, any>): Promise<any
 	const cookie = getStoredCookie();
 	if (cookie) {
 		headers['x-ytm-cookie'] = cookie;
+	}
+	const oauthSession = getStoredOAuthSession();
+	if (oauthSession?.accessToken) {
+		headers['x-ytm-oauth'] = oauthSession.accessToken;
 	}
 
 	const res = await fetch(`/api/ytm/${endpoint}`, {
@@ -213,16 +218,29 @@ function parseTwoRowItem(renderer: any): BrowseItem | null {
 
 export async function ytmSearchSongs(query: string): Promise<SongItem[]> {
 	try {
-		const data = await postYtm('search', { query, params: FILTER_SONG });
+		const data = await postYtm('search', { query, params: 'EgWKAQIIAWoKEAkQBRAKEAMQBA==' });
 		const listRenderers = findAll(data, 'musicResponsiveListItemRenderer');
 		const songs: SongItem[] = [];
 		for (const r of listRenderers) {
 			const s = parseSongRow(r);
 			if (s) songs.push(s);
 		}
-		return songs;
+		if (songs.length > 0) return songs;
 	} catch (e) {
 		console.warn('ytmSearchSongs error:', e);
+	}
+
+	// Fallback to unfiltered search songs
+	try {
+		const all = await ytmSearchAll(query);
+		return all.songs.map((s) => ({
+			video_id: s.id,
+			title: s.title,
+			artists: s.subtitle || 'Unknown Artist',
+			thumbnail: s.thumbnail,
+			duration: s.duration || '3:00'
+		}));
+	} catch {
 		return [];
 	}
 }
@@ -244,14 +262,14 @@ export async function ytmSearchAll(query: string): Promise<SearchResults> {
 			const title = getRunsText(card.title);
 			const subtitle = getRunsText(card.subtitle);
 			const thumb = getThumbnail(card.thumbnail?.musicThumbnailRenderer?.thumbnail);
-			const browseId = card.onTap?.browseEndpoint?.browseId;
-			const videoId = card.onTap?.watchEndpoint?.videoId;
+			const browseId = card.onTap?.browseEndpoint?.browseId || card.title?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId;
+			const videoId = card.onTap?.watchEndpoint?.videoId || card.title?.runs?.[0]?.navigationEndpoint?.watchEndpoint?.videoId;
 
 			if (browseId || videoId) {
 				results.top.push({
-					kind: videoId ? 'song' : browseId.startsWith('UC') ? 'artist' : 'album',
-					id: videoId || browseId,
-					title,
+					kind: videoId ? 'song' : browseId?.startsWith('UC') ? 'artist' : 'album',
+					id: videoId || browseId!,
+					title: title || 'Top Result',
 					subtitle,
 					thumbnail: thumb
 				});
@@ -261,46 +279,83 @@ export async function ytmSearchAll(query: string): Promise<SearchResults> {
 		// Responsive list items categorized
 		const items = findAll(data, 'musicResponsiveListItemRenderer');
 		for (const item of items) {
-			const song = parseSongRow(item);
-			if (!song) continue;
+			const flexCols = item.flexColumns || [];
+			const titleCol = flexCols[0]?.musicResponsiveListItemFlexColumnRenderer?.text;
+			const title = getRunsText(titleCol);
+			if (!title) continue;
 
-			// Check navigation to see if it's album, artist, playlist, or song
+			const subtitleCol = flexCols[1]?.musicResponsiveListItemFlexColumnRenderer?.text;
+			const subtitle = getRunsText(subtitleCol);
+			const thumb = getThumbnail(item.thumbnail?.musicThumbnailRenderer?.thumbnail);
+
+			// Check item navigation for albums/artists/playlists
 			const browseId =
 				item.navigationEndpoint?.browseEndpoint?.browseId ||
-				item.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId;
+				titleCol?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId;
 
-			if (browseId?.startsWith('MPRE')) {
-				results.albums.push({
-					kind: 'album',
-					id: browseId,
-					title: song.title,
-					subtitle: song.artists,
-					thumbnail: song.thumbnail
-				});
-			} else if (browseId?.startsWith('UC')) {
-				results.artists.push({
-					kind: 'artist',
-					id: browseId,
-					title: song.title,
-					subtitle: song.artists,
-					thumbnail: song.thumbnail
-				});
-			} else if (browseId?.startsWith('VL')) {
-				results.playlists.push({
-					kind: 'playlist',
-					id: browseId,
-					title: song.title,
-					subtitle: song.artists,
-					thumbnail: song.thumbnail
-				});
-			} else {
+			if (browseId) {
+				if (browseId.startsWith('MPRE') || browseId.startsWith('FEmusic_library_privately_owned_release')) {
+					results.albums.push({
+						kind: 'album',
+						id: browseId,
+						title,
+						subtitle,
+						thumbnail: thumb
+					});
+					continue;
+				}
+				if (browseId.startsWith('UC')) {
+					results.artists.push({
+						kind: 'artist',
+						id: browseId,
+						title,
+						subtitle,
+						thumbnail: thumb
+					});
+					continue;
+				}
+				if (browseId.startsWith('VL') || browseId.startsWith('RDCLAK')) {
+					results.playlists.push({
+						kind: 'playlist',
+						id: browseId,
+						title,
+						subtitle,
+						thumbnail: thumb
+					});
+					continue;
+				}
+			}
+
+			// Check for song
+			const videoId =
+				item.playlistItemData?.videoId ||
+				item.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId ||
+				item.onTap?.watchEndpoint?.videoId ||
+				item.doubleTap?.watchEndpoint?.videoId ||
+				titleCol?.runs?.[0]?.navigationEndpoint?.watchEndpoint?.videoId;
+
+			if (videoId) {
+				let duration = '';
+				let artists = subtitle;
+				const parts = subtitle.split('•').map((s: string) => s.trim());
+				if (parts.length >= 2) {
+					artists = parts[0];
+					if (parts[parts.length - 1].match(/^\d+:\d+$/)) {
+						duration = parts[parts.length - 1];
+					}
+				}
+				const fixedCols = item.fixedColumns || [];
+				if (!duration && fixedCols.length > 0) {
+					duration = getRunsText(fixedCols[0]?.musicResponsiveListItemFixedColumnRenderer?.text);
+				}
+
 				results.songs.push({
 					kind: 'song',
-					id: song.video_id,
-					title: song.title,
-					subtitle: song.artists,
-					thumbnail: song.thumbnail,
-					duration: song.duration
+					id: videoId,
+					title,
+					subtitle: artists || 'Unknown Artist',
+					thumbnail: thumb || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+					duration: duration || '3:00'
 				});
 			}
 		}
@@ -399,7 +454,12 @@ export async function ytmGetAccount(): Promise<Account> {
 
 export async function ytmGetPlaylist(id: string): Promise<PlaylistPage> {
 	try {
-		const browseId = id.startsWith('VL') ? id : `VL${id}`;
+		let browseId = id;
+		if (id === 'LM') {
+			browseId = 'VLLM';
+		} else if (!id.startsWith('VL') && !id.startsWith('FE') && !id.startsWith('MPRE')) {
+			browseId = `VL${id}`;
+		}
 		const data = await postYtm('browse', { browseId });
 
 		const header =
@@ -418,18 +478,31 @@ export async function ytmGetPlaylist(id: string): Promise<PlaylistPage> {
 			if (s) items.push(s);
 		}
 
-		return {
-			title,
-			subtitle,
-			thumbnail,
-			items,
-			owned: false,
-			collaborative: false
-		};
+		if (items.length > 0) {
+			return {
+				title,
+				subtitle,
+				thumbnail,
+				items,
+				owned: false,
+				collaborative: false
+			};
+		}
 	} catch (e) {
-		console.warn('ytmGetPlaylist error:', e);
-		return { title: 'Playlist', items: [], owned: false, collaborative: false };
+		console.warn('ytmGetPlaylist InnerTube error:', e);
 	}
+
+	// Fallback to Google OAuth YouTube Data API if authenticated
+	try {
+		const oauthPage = await fetchOAuthPlaylistPage(id);
+		if (oauthPage && oauthPage.items.length > 0) {
+			return oauthPage;
+		}
+	} catch (e) {
+		console.warn('ytmGetPlaylist OAuth fallback error:', e);
+	}
+
+	return { title: 'Playlist', items: [], owned: false, collaborative: false };
 }
 
 export async function ytmGetAlbum(id: string): Promise<AlbumPage> {
@@ -495,3 +568,68 @@ export async function ytmGetArtist(id: string): Promise<ArtistPage> {
 		return { name: 'Artist', channelId: id, subscribed: false, topSongs: [], sections: [] };
 	}
 }
+
+export async function ytmGetLibraryPlaylists(): Promise<BrowseItem[]> {
+	try {
+		const data = await postYtm('browse', { browseId: 'FEmusic_liked_playlists' });
+		const twoRowItems = findAll(data, 'musicTwoRowItemRenderer');
+		const items: BrowseItem[] = [];
+		for (const r of twoRowItems) {
+			const item = parseTwoRowItem(r);
+			if (item) items.push(item);
+		}
+		return items;
+	} catch (e) {
+		console.warn('ytmGetLibraryPlaylists error:', e);
+		return [];
+	}
+}
+
+export async function ytmGetLibraryAlbums(): Promise<BrowseItem[]> {
+	try {
+		const data = await postYtm('browse', { browseId: 'FEmusic_liked_albums' });
+		const twoRowItems = findAll(data, 'musicTwoRowItemRenderer');
+		const items: BrowseItem[] = [];
+		for (const r of twoRowItems) {
+			const item = parseTwoRowItem(r);
+			if (item) {
+				item.kind = 'album';
+				items.push(item);
+			}
+		}
+		return items;
+	} catch (e) {
+		console.warn('ytmGetLibraryAlbums error:', e);
+		return [];
+	}
+}
+
+export async function ytmGetLibraryArtists(): Promise<BrowseItem[]> {
+	try {
+		const data = await postYtm('browse', { browseId: 'FEmusic_library_corpus_track_artists' });
+		const twoRowItems = findAll(data, 'musicTwoRowItemRenderer');
+		const items: BrowseItem[] = [];
+		for (const r of twoRowItems) {
+			const item = parseTwoRowItem(r);
+			if (item) {
+				item.kind = 'artist';
+				items.push(item);
+			}
+		}
+		if (!items.length) {
+			const listItems = findAll(data, 'musicResponsiveListItemRenderer');
+			for (const r of listItems) {
+				const item = parseTwoRowItem(r);
+				if (item) {
+					item.kind = 'artist';
+					items.push(item);
+				}
+			}
+		}
+		return items;
+	} catch (e) {
+		console.warn('ytmGetLibraryArtists error:', e);
+		return [];
+	}
+}
+

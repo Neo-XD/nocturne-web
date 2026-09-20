@@ -1,4 +1,4 @@
-import type { Account, BrowseItem } from './api';
+import type { Account, BrowseItem, PlaylistPage, SongItem } from './api';
 import { emitWebEvent } from './webEngine';
 
 export interface OAuthSession {
@@ -176,6 +176,15 @@ export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
 	const session = getStoredOAuthSession();
 	if (!session?.accessToken) return [];
 
+	const baseItems: BrowseItem[] = [
+		{
+			kind: 'playlist',
+			id: 'VLLM',
+			title: 'Liked Music',
+			subtitle: 'Auto playlist'
+		}
+	];
+
 	try {
 		const res = await fetch(
 			'https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=50',
@@ -183,10 +192,12 @@ export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
 		);
 
 		if (!res.ok) {
+			const err = await res.json().catch(() => ({}));
+			console.warn('YouTube Data API playlist fetch failed:', res.status, err);
 			if (res.status === 401) {
 				clearOAuthSession();
 			}
-			return [];
+			return baseItems;
 		}
 
 		const data = await res.json();
@@ -201,17 +212,64 @@ export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
 				p.snippet?.thumbnails?.default?.url
 		}));
 
-		// Prepend Liked Music
-		items.unshift({
-			kind: 'playlist',
-			id: 'VLLM',
-			title: 'Liked Music',
-			subtitle: 'Auto playlist'
-		});
-
-		return items;
+		return [...baseItems, ...items];
 	} catch (e) {
 		console.warn('Failed to fetch OAuth user playlists:', e);
-		return [];
+		return baseItems;
+	}
+}
+
+export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage | null> {
+	const session = getStoredOAuthSession();
+	if (!session?.accessToken) return null;
+
+	let cleanId = id.replace(/^VL/, '');
+	let isLiked = false;
+	if (cleanId === 'LM' || cleanId === 'FEmusic_liked_videos') {
+		cleanId = 'LL';
+		isLiked = true;
+	}
+
+	try {
+		const res = await fetch(
+			`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(cleanId)}&maxResults=50`,
+			{ headers: { Authorization: `Bearer ${session.accessToken}` } }
+		);
+
+		if (!res.ok) return null;
+		const data = await res.json();
+		const items: SongItem[] = (data.items || [])
+			.map((item: any) => {
+				const videoId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
+				const title = item.snippet?.title || 'Unknown Title';
+				const artist = item.snippet?.videoOwnerChannelTitle || item.snippet?.channelTitle || 'Unknown Artist';
+				const thumb =
+					item.snippet?.thumbnails?.high?.url ||
+					item.snippet?.thumbnails?.medium?.url ||
+					item.snippet?.thumbnails?.default?.url;
+
+				return {
+					video_id: videoId,
+					title,
+					artists: artist,
+					artist_id: item.snippet?.videoOwnerChannelId,
+					thumbnail: thumb || (videoId ? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` : undefined),
+					duration: '3:00',
+					rating: isLiked ? ('LIKE' as const) : ('indifferent' as const)
+				};
+			})
+			.filter((s: SongItem) => !!s.video_id && s.title !== 'Private video' && s.title !== 'Deleted video');
+
+		return {
+			title: isLiked ? 'Liked Music' : 'Playlist',
+			subtitle: `${items.length} songs`,
+			thumbnail: items[0]?.thumbnail,
+			items,
+			owned: true,
+			collaborative: false
+		};
+	} catch (e) {
+		console.warn('fetchOAuthPlaylistPage failed:', e);
+		return null;
 	}
 }

@@ -15,6 +15,9 @@ import {
 	ytmGetArtist,
 	ytmGetPlaylist,
 	ytmGetAccount,
+	ytmGetLibraryPlaylists,
+	ytmGetLibraryAlbums,
+	ytmGetLibraryArtists,
 	setStoredCookie
 } from './ytmusic';
 import { getStoredOAuthSession, clearOAuthSession, fetchOAuthUserPlaylists } from './oauth';
@@ -247,56 +250,12 @@ class WebAudioEngine {
 		} catch (e: any) {
 			if (e.name === 'AbortError') return;
 			console.error('Failed to load stream:', e);
-			emitWebEvent('playback-notice', `Loading alternative stream for "${item.title}"...`);
-			rotateInstance();
-			// Attempt retry with rotated instance
-			try {
-				const retryUrl = await this.resolveAudioStreamUrl(item.video_id);
-				if (retryUrl && this.audio) {
-					this.audio.src = retryUrl;
-					await this.audio.play();
-					this.paused = false;
-					emitWebEvent('playback-state', 'playing');
-					return;
-				}
-			} catch {}
 			emitWebEvent('playback-error', `Unable to stream "${item.title}".`);
 		}
 	}
 
 	private async resolveAudioStreamUrl(videoId: string, signal?: AbortSignal): Promise<string | null> {
-		for (let attempt = 0; attempt < INVIDIOUS_INSTANCES.length; attempt++) {
-			const base = getInstance();
-			try {
-				const res = await fetch(`${base}/api/v1/videos/${encodeURIComponent(videoId)}`, {
-					signal,
-					headers: { Accept: 'application/json' }
-				});
-				if (!res.ok) {
-					rotateInstance();
-					continue;
-				}
-				const data = await res.json();
-				if (Array.isArray(data.adaptiveFormats)) {
-					// Prefer audio formats
-					const audioFormats = data.adaptiveFormats.filter(
-						(f: any) => f.type && f.type.startsWith('audio/') && f.url
-					);
-					if (audioFormats.length > 0) {
-						// Pick highest bitrate audio
-						audioFormats.sort((a: any, b: any) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
-						return audioFormats[0].url;
-					}
-				}
-				if (Array.isArray(data.formatStreams) && data.formatStreams.length > 0) {
-					return data.formatStreams[0].url;
-				}
-			} catch (e: any) {
-				if (e.name === 'AbortError') throw e;
-				rotateInstance();
-			}
-		}
-		return null;
+		return `/api/stream?id=${encodeURIComponent(videoId)}`;
 	}
 
 	public pause(): void {
@@ -403,29 +362,48 @@ export async function webSearch(query: string): Promise<SongItem[]> {
 export async function webGetLyrics(
 	title: string,
 	artist: string,
-	duration?: number
+	duration?: number,
+	album?: string,
+	videoId?: string
 ): Promise<any> {
+	const cleanTitle = title
+		.replace(/\(Official.*?\)/gi, '')
+		.replace(/\[Official.*?\]/gi, '')
+		.replace(/\(Audio\)/gi, '')
+		.replace(/\(Lyric.*?\)/gi, '')
+		.replace(/\|.*$/g, '')
+		.trim();
+
+	const cleanArtist = artist.split(',')[0].split('•')[0].trim();
+
 	try {
 		const params = new URLSearchParams({
-			track_name: title,
-			artist_name: artist
+			track_name: cleanTitle,
+			artist_name: cleanArtist
 		});
 		if (duration) params.set('duration', String(Math.round(duration)));
 
 		const res = await fetch(`https://lrclib.net/api/get?${params.toString()}`);
-		if (!res.ok) {
-			// Try fallback search
-			const sRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(`${title} ${artist}`)}`);
-			if (!sRes.ok) return null;
-			const list = await sRes.json();
-			if (!Array.isArray(list) || !list.length) return null;
-			return formatLrcResponse(list[0]);
+		if (res.ok) {
+			const data = await res.json();
+			const formatted = formatLrcResponse(data);
+			if (formatted) return formatted;
 		}
-		const data = await res.json();
-		return formatLrcResponse(data);
-	} catch {
-		return null;
+
+		// Fallback search on lrclib
+		const sRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(`${cleanTitle} ${cleanArtist}`)}`);
+		if (sRes.ok) {
+			const list = await sRes.json();
+			if (Array.isArray(list) && list.length > 0) {
+				const formatted = formatLrcResponse(list[0]);
+				if (formatted) return formatted;
+			}
+		}
+	} catch (e) {
+		console.warn('Lyrics fetch error:', e);
 	}
+
+	return null;
 }
 
 function formatLrcResponse(data: any) {
@@ -438,7 +416,10 @@ function formatLrcResponse(data: any) {
 				if (!match) return null;
 				const min = parseInt(match[1], 10);
 				const sec = parseFloat(match[2]);
-				return { time: min * 60 + sec, text: match[3].trim() };
+				return {
+					time_ms: Math.round((min * 60 + sec) * 1000),
+					text: match[3].trim()
+				};
 			})
 			.filter(Boolean);
 		return {
@@ -451,7 +432,8 @@ function formatLrcResponse(data: any) {
 	if (data.plainLyrics) {
 		const lines = data.plainLyrics
 			.split('\n')
-			.map((text: string) => ({ time: 0, text }));
+			.map((text: string) => ({ text: text.trim() }))
+			.filter((l: any) => l.text.length > 0);
 		return {
 			source: 'LRCLIB',
 			synced: false,
@@ -787,14 +769,52 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 
 		case 'get_library': {
 			const oauthSession = getStoredOAuthSession();
+			let items: BrowseItem[] = [];
 			if (oauthSession) {
-				const playlists = await fetchOAuthUserPlaylists();
-				return playlists as unknown as T;
+				items = await fetchOAuthUserPlaylists();
 			}
-			return [] as unknown as T;
+			try {
+				const ytmPlaylists = await ytmGetLibraryPlaylists();
+				const seen = new Set(items.map((i) => i.id));
+				for (const pl of ytmPlaylists) {
+					if (!seen.has(pl.id)) {
+						items.push(pl);
+						seen.add(pl.id);
+					}
+				}
+			} catch {}
+
+			// Always guarantee Liked Music is present if user has a session or cookie
+			if (items.length === 0 && (oauthSession || (typeof localStorage !== 'undefined' && localStorage.getItem('nocturne_ytm_cookie')))) {
+				items.push({
+					kind: 'playlist',
+					id: 'VLLM',
+					title: 'Liked Music',
+					subtitle: 'Auto playlist'
+				});
+			}
+
+			return items as unknown as T;
 		}
-		case 'get_library_albums':
-		case 'get_library_artists':
+
+		case 'get_library_albums': {
+			try {
+				const albums = await ytmGetLibraryAlbums();
+				return albums as unknown as T;
+			} catch {
+				return [] as unknown as T;
+			}
+		}
+
+		case 'get_library_artists': {
+			try {
+				const artists = await ytmGetLibraryArtists();
+				return artists as unknown as T;
+			} catch {
+				return [] as unknown as T;
+			}
+		}
+
 		case 'get_local_library':
 			return [] as unknown as T;
 
@@ -825,12 +845,57 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 			}
 			return undefined as unknown as T;
 
+		case 'get_lyrics': {
+			const title = args?.title;
+			const artists = args?.artists || args?.artist;
+			if (title && artists) {
+				const lrc = await webGetLyrics(title, artists, args?.duration, args?.album, args?.videoId);
+				return lrc as unknown as T;
+			}
+			return null as unknown as T;
+		}
+
 		case 'search_lyrics_candidates':
-			if (args?.title && args?.artist) {
-				const lrc = await webGetLyrics(args.title, args.artist, args.duration_seconds);
+			if (args?.title && (args?.artist || args?.artists)) {
+				const lrc = await webGetLyrics(args.title, args.artist || args.artists, args.duration_seconds);
 				return (lrc ? [lrc] : []) as unknown as T;
 			}
 			return [] as unknown as T;
+
+		case 'download_song': {
+			if (args?.videoId && typeof window !== 'undefined') {
+				const title = args.title || 'track';
+				const artist = args.artist || 'Unknown Artist';
+				const cleanName = `${title} - ${artist}`.replace(/[^a-zA-Z0-9_\-\. ]/g, '_');
+				const a = document.createElement('a');
+				a.href = `/api/stream?id=${encodeURIComponent(args.videoId)}&download=1&title=${encodeURIComponent(cleanName)}`;
+				a.download = `${cleanName}.m4a`;
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+				return 'Downloads folder' as unknown as T;
+			}
+			return 'Downloads' as unknown as T;
+		}
+
+		case 'download_playlist': {
+			const items: SongItem[] = args?.items || [];
+			if (typeof window !== 'undefined' && items.length > 0) {
+				items.forEach((song, i) => {
+					const cleanName = `${song.title} - ${song.artists}`.replace(/[^a-zA-Z0-9_\-\. ]/g, '_');
+					setTimeout(() => {
+						const a = document.createElement('a');
+						a.href = `/api/stream?id=${encodeURIComponent(song.video_id)}&download=1&title=${encodeURIComponent(cleanName)}`;
+						a.download = `${cleanName}.m4a`;
+						document.body.appendChild(a);
+						a.click();
+						document.body.removeChild(a);
+					}, i * 1500);
+				});
+				return 'Downloads folder' as unknown as T;
+			}
+			return 'Downloads' as unknown as T;
+		}
 
 		default:
 			// Graceful no-op for any unhandled commands
