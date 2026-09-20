@@ -14,6 +14,7 @@ import {
 	ytmGetAlbum,
 	ytmGetArtist,
 	ytmGetPlaylist,
+	ytmGetPlaylistMore,
 	ytmGetAccount,
 	ytmGetLibraryPlaylists,
 	ytmGetLibraryAlbums,
@@ -23,7 +24,13 @@ import {
 	setStoredCookie,
 	getApiBaseUrl
 } from './ytmusic';
-import { getStoredOAuthSession, clearOAuthSession, fetchOAuthPlaylistPage, fetchOAuthUserPlaylists } from './oauth';
+import {
+	getStoredOAuthSession,
+	clearOAuthSession,
+	fetchOAuthPlaylistPage,
+	fetchOAuthPlaylistContinuation,
+	fetchOAuthUserPlaylists
+} from './oauth';
 import { openLoginModal } from './loginModal.svelte';
 
 // ---------------------------------------------------------------------------
@@ -814,20 +821,57 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 
 		case 'get_playlist': {
 			if (args?.id) {
-				const res = await ytmGetPlaylist(args.id);
-				if (res && res.items.length > 0) return res as unknown as T;
+				const id = args.id as string;
+				const cleanId = id.replace(/^VL/, '');
+				const isLiked = cleanId === 'LM' || cleanId === 'LL' || cleanId === 'VLLM' || cleanId === 'FEmusic_liked_videos';
+				const isUserPlaylist = cleanId.startsWith('PL');
 				const oauthSession = getStoredOAuthSession();
-				if (oauthSession) {
+
+				// Fast path: for liked music or user playlists when logged in with OAuth,
+				// fetch directly from YouTube Data API v3 without waiting for InnerTube to time out
+				if (oauthSession && (isLiked || isUserPlaylist)) {
 					try {
-						const oauthPl = await fetchOAuthPlaylistPage(args.id);
+						const oauthPl = await fetchOAuthPlaylistPage(id);
 						if (oauthPl && oauthPl.items.length > 0) return oauthPl as unknown as T;
 					} catch (e) {
 						console.warn('OAuth playlist page error:', e);
 					}
 				}
+
+				const res = await ytmGetPlaylist(id);
+				if (res && res.items.length > 0) return res as unknown as T;
+
+				if (oauthSession && !isLiked && !isUserPlaylist) {
+					try {
+						const oauthPl = await fetchOAuthPlaylistPage(id);
+						if (oauthPl && oauthPl.items.length > 0) return oauthPl as unknown as T;
+					} catch (e) {
+						console.warn('OAuth playlist page fallback error:', e);
+					}
+				}
 				return res as unknown as T;
 			}
 			return { title: 'Playlist', items: [], owned: false, collaborative: false } as unknown as T;
+		}
+
+		case 'get_playlist_more': {
+			const token = args?.token as string | undefined;
+			if (!token) return { items: [] } as unknown as T;
+			if (token.startsWith('oauth:')) {
+				const parts = token.slice(6).split(':');
+				const id = parts[0];
+				const pageToken = parts.slice(1).join(':');
+				const res = await fetchOAuthPlaylistContinuation(id, pageToken);
+				if (res) return res as unknown as T;
+				return { items: [] } as unknown as T;
+			}
+			try {
+				const res = await ytmGetPlaylistMore(token);
+				return res as unknown as T;
+			} catch (e) {
+				console.warn('ytmGetPlaylistMore error:', e);
+				return { items: [] } as unknown as T;
+			}
 		}
 
 		case 'get_album': {
@@ -1008,28 +1052,30 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 
 		case 'get_library': {
 			const oauthSession = getStoredOAuthSession();
-			let items: BrowseItem[] = [];
-			try {
-				const ytmPlaylists = await ytmGetLibraryPlaylists();
-				items.push(...ytmPlaylists);
-			} catch (e) {
-				console.warn('ytmGetLibraryPlaylists error:', e);
+			const cookie = typeof localStorage !== 'undefined' ? localStorage.getItem('nocturne_ytm_cookie') : null;
+
+			const promises: Promise<BrowseItem[]>[] = [];
+			// Only call InnerTube library playlists if a cookie is present (guest browse on FEmusic_liked_playlists fails)
+			if (cookie) {
+				promises.push(ytmGetLibraryPlaylists().catch(() => []));
+			}
+			if (oauthSession) {
+				promises.push(fetchOAuthUserPlaylists().catch(() => []));
 			}
 
-			if (oauthSession) {
-				try {
-					const oauthPlaylists = await fetchOAuthUserPlaylists();
-					for (const p of oauthPlaylists) {
+			const results = await Promise.allSettled(promises);
+			const items: BrowseItem[] = [];
+
+			for (const res of results) {
+				if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+					for (const p of res.value) {
 						if (!items.some((i) => i.id === p.id)) {
 							items.push(p);
 						}
 					}
-				} catch (e) {
-					console.warn('fetchOAuthUserPlaylists error:', e);
 				}
 			}
 
-			const cookie = typeof localStorage !== 'undefined' ? localStorage.getItem('nocturne_ytm_cookie') : null;
 			// Always guarantee Liked Music is present if user has a session or cookie
 			if ((oauthSession || cookie) && !items.some((i) => i.id === 'VLLM' || i.id === 'LM')) {
 				items.unshift({

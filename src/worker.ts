@@ -237,9 +237,9 @@ export default {
 					}
 				}
 
-				// Forward incoming Authorization header (e.g. OAuth Bearer) if not already set
+				// Forward incoming Authorization header only if SAPISIDHASH (InnerTube rejects OAuth Bearer tokens with 401)
 				const incomingAuth = request.headers.get('Authorization') || request.headers.get('authorization');
-				if (incomingAuth && !headers.has('Authorization')) {
+				if (incomingAuth && !headers.has('Authorization') && incomingAuth.startsWith('SAPISIDHASH ')) {
 					headers.set('Authorization', incomingAuth);
 				}
 

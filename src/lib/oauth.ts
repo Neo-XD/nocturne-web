@@ -1,4 +1,4 @@
-import type { Account, BrowseItem, PlaylistPage, SongItem } from './api';
+import type { Account, BrowseItem, PlaylistContinuation, PlaylistPage, SongItem } from './api';
 import { emitWebEvent } from './webEngine';
 import { writable } from 'svelte/store';
 
@@ -246,44 +246,102 @@ export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
 	}
 }
 
+export function parseIsoDuration(durationStr?: string): string {
+	if (!durationStr) return '3:00';
+	const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+	if (!match) return '3:00';
+	const hours = parseInt(match[1] || '0', 10);
+	const minutes = parseInt(match[2] || '0', 10);
+	const seconds = parseInt(match[3] || '0', 10);
+	const secStr = seconds < 10 ? `0${seconds}` : `${seconds}`;
+	if (hours > 0) {
+		const minStr = minutes < 10 ? `0${minutes}` : `${minutes}`;
+		return `${hours}:${minStr}:${secStr}`;
+	}
+	return `${minutes}:${secStr}`;
+}
+
 export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage | null> {
 	const session = getStoredOAuthSession();
 	if (!session?.accessToken) return null;
 
 	let cleanId = id.replace(/^VL/, '');
-	let isLiked = false;
-	if (cleanId === 'LM' || cleanId === 'FEmusic_liked_videos') {
-		cleanId = 'LL';
-		isLiked = true;
-	}
+	const isLiked = cleanId === 'LM' || cleanId === 'LL' || cleanId === 'VLLM' || cleanId === 'FEmusic_liked_videos';
 
 	try {
-		let title = isLiked ? 'Liked Music' : 'Playlist';
-		let description: string | undefined = undefined;
+		if (isLiked) {
+			const res = await fetch(
+				'https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&myRating=like&maxResults=50',
+				{ headers: { Authorization: `Bearer ${session.accessToken}` } }
+			);
 
-		if (!isLiked) {
-			try {
-				const plInfoRes = await fetch(
-					`https://www.googleapis.com/youtube/v3/playlists?part=snippet&id=${encodeURIComponent(cleanId)}`,
-					{ headers: { Authorization: `Bearer ${session.accessToken}` } }
-				);
-				if (plInfoRes.ok) {
-					const plInfoData = await plInfoRes.json();
-					if (plInfoData.items?.[0]?.snippet?.title) {
-						title = plInfoData.items[0].snippet.title;
-						description = plInfoData.items[0].snippet.description;
-					}
-				}
-			} catch {}
+			if (!res.ok) {
+				const errText = await res.text().catch(() => '');
+				console.warn('Failed to fetch liked videos:', res.status, errText);
+				return null;
+			}
+
+			const data = await res.json();
+			const items: SongItem[] = (data.items || [])
+				.map((item: any) => {
+					const videoId = item.id;
+					const songTitle = item.snippet?.title || 'Unknown Title';
+					const artist = item.snippet?.channelTitle || 'Unknown Artist';
+					const thumb =
+						item.snippet?.thumbnails?.maxres?.url ||
+						item.snippet?.thumbnails?.high?.url ||
+						item.snippet?.thumbnails?.medium?.url ||
+						item.snippet?.thumbnails?.default?.url;
+
+					return {
+						video_id: videoId,
+						title: songTitle,
+						artists: artist,
+						artist_id: item.snippet?.channelId,
+						thumbnail: thumb || (videoId ? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` : undefined),
+						duration: parseIsoDuration(item.contentDetails?.duration),
+						rating: 'LIKE' as const
+					};
+				})
+				.filter((s: SongItem) => !!s.video_id && s.title !== 'Private video' && s.title !== 'Deleted video');
+
+			return {
+				title: 'Liked Music',
+				description: 'Your liked songs and videos',
+				subtitle: data.pageInfo?.totalResults ? `${data.pageInfo.totalResults} songs` : `${items.length} songs`,
+				thumbnail: items[0]?.thumbnail,
+				items,
+				continuation: data.nextPageToken ? `oauth:liked:${data.nextPageToken}` : undefined,
+				owned: true,
+				collaborative: false
+			};
 		}
 
-		const res = await fetch(
-			`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(cleanId)}&maxResults=50`,
-			{ headers: { Authorization: `Bearer ${session.accessToken}` } }
-		);
+		// User playlist: fetch playlist details and playlistItems concurrently in parallel
+		const [plInfoRes, itemsRes] = await Promise.all([
+			fetch(
+				`https://www.googleapis.com/youtube/v3/playlists?part=snippet&id=${encodeURIComponent(cleanId)}`,
+				{ headers: { Authorization: `Bearer ${session.accessToken}` } }
+			).catch(() => null),
+			fetch(
+				`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(cleanId)}&maxResults=50`,
+				{ headers: { Authorization: `Bearer ${session.accessToken}` } }
+			).catch(() => null)
+		]);
 
-		if (!res.ok) return null;
-		const data = await res.json();
+		if (!itemsRes || !itemsRes.ok) return null;
+
+		let title = 'Playlist';
+		let description: string | undefined = undefined;
+		if (plInfoRes && plInfoRes.ok) {
+			const plInfoData = await plInfoRes.json().catch(() => null);
+			if (plInfoData?.items?.[0]?.snippet?.title) {
+				title = plInfoData.items[0].snippet.title;
+				description = plInfoData.items[0].snippet.description;
+			}
+		}
+
+		const data = await itemsRes.json();
 		const items: SongItem[] = (data.items || [])
 			.map((item: any) => {
 				const videoId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
@@ -301,7 +359,7 @@ export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage |
 					artist_id: item.snippet?.videoOwnerChannelId,
 					thumbnail: thumb || (videoId ? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` : undefined),
 					duration: '3:00',
-					rating: isLiked ? ('LIKE' as const) : ('indifferent' as const)
+					rating: 'indifferent' as const
 				};
 			})
 			.filter((s: SongItem) => !!s.video_id && s.title !== 'Private video' && s.title !== 'Deleted video');
@@ -312,11 +370,94 @@ export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage |
 			subtitle: `${items.length} songs`,
 			thumbnail: items[0]?.thumbnail,
 			items,
+			continuation: data.nextPageToken ? `oauth:${cleanId}:${data.nextPageToken}` : undefined,
 			owned: true,
 			collaborative: false
 		};
 	} catch (e) {
 		console.warn('fetchOAuthPlaylistPage failed:', e);
+		return null;
+	}
+}
+
+export async function fetchOAuthPlaylistContinuation(
+	idOrLiked: string,
+	pageToken: string
+): Promise<PlaylistContinuation | null> {
+	const session = getStoredOAuthSession();
+	if (!session?.accessToken) return null;
+
+	try {
+		if (idOrLiked === 'liked') {
+			const res = await fetch(
+				`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&myRating=like&maxResults=50&pageToken=${encodeURIComponent(pageToken)}`,
+				{ headers: { Authorization: `Bearer ${session.accessToken}` } }
+			);
+			if (!res.ok) return null;
+			const data = await res.json();
+			const items: SongItem[] = (data.items || [])
+				.map((item: any) => {
+					const videoId = item.id;
+					const songTitle = item.snippet?.title || 'Unknown Title';
+					const artist = item.snippet?.channelTitle || 'Unknown Artist';
+					const thumb =
+						item.snippet?.thumbnails?.maxres?.url ||
+						item.snippet?.thumbnails?.high?.url ||
+						item.snippet?.thumbnails?.medium?.url ||
+						item.snippet?.thumbnails?.default?.url;
+
+					return {
+						video_id: videoId,
+						title: songTitle,
+						artists: artist,
+						artist_id: item.snippet?.channelId,
+						thumbnail: thumb || (videoId ? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` : undefined),
+						duration: parseIsoDuration(item.contentDetails?.duration),
+						rating: 'LIKE' as const
+					};
+				})
+				.filter((s: SongItem) => !!s.video_id && s.title !== 'Private video' && s.title !== 'Deleted video');
+
+			return {
+				items,
+				continuation: data.nextPageToken ? `oauth:liked:${data.nextPageToken}` : undefined
+			};
+		} else {
+			const res = await fetch(
+				`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(idOrLiked)}&maxResults=50&pageToken=${encodeURIComponent(pageToken)}`,
+				{ headers: { Authorization: `Bearer ${session.accessToken}` } }
+			);
+			if (!res.ok) return null;
+			const data = await res.json();
+			const items: SongItem[] = (data.items || [])
+				.map((item: any) => {
+					const videoId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
+					const songTitle = item.snippet?.title || 'Unknown Title';
+					const artist = item.snippet?.videoOwnerChannelTitle || item.snippet?.channelTitle || 'Unknown Artist';
+					const thumb =
+						item.snippet?.thumbnails?.high?.url ||
+						item.snippet?.thumbnails?.medium?.url ||
+						item.snippet?.thumbnails?.default?.url;
+
+					return {
+						video_id: videoId,
+						title: songTitle,
+						artists: artist,
+						artist_id: item.snippet?.videoOwnerChannelId,
+						thumbnail: thumb || (videoId ? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` : undefined),
+						duration: '3:00',
+						rating: 'indifferent' as const
+					};
+				})
+				.filter((s: SongItem) => !!s.video_id && s.title !== 'Private video' && s.title !== 'Deleted video');
+
+			return {
+				items,
+				continuation: data.nextPageToken ? `oauth:${idOrLiked}:${data.nextPageToken}` : undefined
+			};
+		}
+	} catch (e) {
+		console.warn('fetchOAuthPlaylistContinuation error:', e);
 		return null;
 	}
 }

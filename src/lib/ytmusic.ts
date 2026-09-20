@@ -6,6 +6,7 @@ import type {
 	HomeChip,
 	HomePage,
 	HomeSection,
+	PlaylistContinuation,
 	PlaylistPage,
 	SearchResults,
 	SongItem
@@ -52,10 +53,6 @@ async function postYtm(endpoint: string, body: Record<string, any>): Promise<any
 	const cookie = getStoredCookie();
 	if (cookie) {
 		headers['x-ytm-cookie'] = cookie;
-	}
-	const oauthSession = getStoredOAuthSession();
-	if (oauthSession?.accessToken) {
-		headers['Authorization'] = `Bearer ${oauthSession.accessToken}`;
 	}
 
 	const apiBase = getApiBaseUrl();
@@ -126,7 +123,7 @@ export function getMusicVideoType(renderer: any): string | undefined {
 
 export function isAudioTrack(renderer: any, allowOmv = false): boolean {
 	const mvt = getMusicVideoType(renderer);
-	if (!mvt) return allowOmv;
+	if (!mvt) return true;
 	// Reject non-music content: user-generated YouTube videos, podcast episodes, etc.
 	if (mvt === 'MUSIC_VIDEO_TYPE_UGC' || mvt === 'MUSIC_VIDEO_TYPE_PODCAST_EPISODE') return false;
 	if (mvt === 'MUSIC_VIDEO_TYPE_OMV') return allowOmv;
@@ -488,6 +485,24 @@ export async function ytmGetAccount(): Promise<Account> {
 }
 
 export async function ytmGetPlaylist(id: string): Promise<PlaylistPage> {
+	const cleanId = id.replace(/^VL/, '');
+	const isLiked = cleanId === 'LM' || cleanId === 'LL' || cleanId === 'VLLM' || cleanId === 'FEmusic_liked_videos';
+	const isUserPl = cleanId.startsWith('PL');
+	const oauthSession = getStoredOAuthSession();
+
+	// If authenticated via OAuth and requesting Liked Music or a user playlist, query YouTube Data API v3 directly
+	// to avoid a doomed 3-5s timeout on unauthenticated InnerTube
+	if (oauthSession && (isLiked || isUserPl)) {
+		try {
+			const oauthPage = await fetchOAuthPlaylistPage(id);
+			if (oauthPage && oauthPage.items.length > 0) {
+				return oauthPage;
+			}
+		} catch (e) {
+			console.warn('Fast OAuth playlist fetch error:', e);
+		}
+	}
+
 	try {
 		let browseId = id;
 		if (id === 'LM') {
@@ -513,12 +528,17 @@ export async function ytmGetPlaylist(id: string): Promise<PlaylistPage> {
 			if (s) items.push(s);
 		}
 
+		const cont =
+			findAll(data, 'continuationCommand')[0]?.token ||
+			findAll(data, 'continuationItemRenderer')[0]?.continuationEndpoint?.continuationCommand?.token;
+
 		if (items.length > 0) {
 			return {
 				title,
 				subtitle,
 				thumbnail,
 				items,
+				continuation: cont,
 				owned: false,
 				collaborative: false
 			};
@@ -527,17 +547,38 @@ export async function ytmGetPlaylist(id: string): Promise<PlaylistPage> {
 		console.warn('ytmGetPlaylist InnerTube error:', e);
 	}
 
-	// Fallback to Google OAuth YouTube Data API if authenticated
-	try {
-		const oauthPage = await fetchOAuthPlaylistPage(id);
-		if (oauthPage && oauthPage.items.length > 0) {
-			return oauthPage;
+	// Fallback to Google OAuth YouTube Data API if authenticated and not already tried
+	if (oauthSession && !isLiked && !isUserPl) {
+		try {
+			const oauthPage = await fetchOAuthPlaylistPage(id);
+			if (oauthPage && oauthPage.items.length > 0) {
+				return oauthPage;
+			}
+		} catch (e) {
+			console.warn('ytmGetPlaylist OAuth fallback error:', e);
 		}
-	} catch (e) {
-		console.warn('ytmGetPlaylist OAuth fallback error:', e);
 	}
 
 	return { title: 'Playlist', items: [], owned: false, collaborative: false };
+}
+
+export async function ytmGetPlaylistMore(token: string): Promise<PlaylistContinuation> {
+	try {
+		const data = await postYtm(`browse?continuation=${encodeURIComponent(token)}`, {});
+		const items: SongItem[] = [];
+		const listItems = findAll(data, 'musicResponsiveListItemRenderer');
+		for (const li of listItems) {
+			const s = parseSongRow(li, true);
+			if (s) items.push(s);
+		}
+		const cont =
+			findAll(data, 'continuationCommand')[0]?.token ||
+			findAll(data, 'continuationItemRenderer')[0]?.continuationEndpoint?.continuationCommand?.token;
+		return { items, continuation: cont };
+	} catch (e) {
+		console.warn('ytmGetPlaylistMore error:', e);
+		return { items: [] };
+	}
 }
 
 export async function ytmGetAlbum(id: string): Promise<AlbumPage> {
