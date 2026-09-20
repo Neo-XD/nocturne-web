@@ -32,6 +32,7 @@
 	import LinkDialog from '$lib/components/LinkDialog.svelte';
 	import DesktopFeatureModal from '$lib/components/DesktopFeatureModal.svelte';
 	import AndroidAdvisoryModal from '$lib/components/AndroidAdvisoryModal.svelte';
+	import LoginModal from '$lib/components/LoginModal.svelte';
 	import MiniPlayer from '$lib/components/MiniPlayer.svelte';
 	import NowPlaying from '$lib/components/NowPlaying.svelte';
 	import NowPlayingSidebar from '$lib/components/NowPlayingSidebar.svelte';
@@ -329,6 +330,7 @@
 	<LinkDialog />
 	<DesktopFeatureModal />
 	<AndroidAdvisoryModal />
+	<LoginModal />
 
 	{#if np.fullscreenOpen && playback.now}
 		<FullscreenPlayer />

@@ -7,6 +7,17 @@ import type {
 	SongItem,
 	UnlistenFn
 } from './api';
+import {
+	ytmSearchSongs,
+	ytmSearchAll,
+	ytmGetHome,
+	ytmGetAlbum,
+	ytmGetArtist,
+	ytmGetPlaylist,
+	ytmGetAccount,
+	setStoredCookie
+} from './ytmusic';
+import { openLoginModal } from './loginModal.svelte';
 
 // Invidious instances with CORS and active API support
 const INVIDIOUS_INSTANCES = [
@@ -555,23 +566,83 @@ export async function webGetHome(): Promise<HomePage> {
 // ---------------------------------------------------------------------------
 export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>): Promise<T> {
 	switch (cmd) {
-		case 'get_home':
+		case 'get_home': {
+			try {
+				const res = await ytmGetHome(args?.params);
+				if (res.sections.length > 0) return res as unknown as T;
+			} catch {}
 			return (await webGetHome()) as unknown as T;
+		}
 
 		case 'get_home_more':
 			return { chips: [], sections: [] } as unknown as T;
 
-		case 'search':
+		case 'search': {
+			try {
+				const songs = await ytmSearchSongs(args?.query || '');
+				if (songs.length > 0) return songs as unknown as T;
+			} catch {}
 			return (await webSearch(args?.query || '')) as unknown as T;
+		}
 
 		case 'search_all': {
+			try {
+				const res = await ytmSearchAll(args?.query || '');
+				if (res.songs.length > 0 || res.albums.length > 0 || res.artists.length > 0) {
+					return res as unknown as T;
+				}
+			} catch {}
 			const songs = await webSearch(args?.query || '');
 			return {
-				songs,
+				top: [],
+				songs: songs.map((s) => ({
+					kind: 'song' as const,
+					id: s.video_id,
+					title: s.title,
+					subtitle: s.artists,
+					thumbnail: s.thumbnail,
+					duration: s.duration
+				})),
 				albums: [],
 				artists: [],
 				playlists: []
 			} as unknown as T;
+		}
+
+		case 'search_cards': {
+			try {
+				const all = await ytmSearchAll(args?.query || '');
+				if (args?.category === 'albums') return all.albums as unknown as T;
+				if (args?.category === 'artists') return all.artists as unknown as T;
+				if (args?.category === 'playlists') return all.playlists as unknown as T;
+				return all.songs as unknown as T;
+			} catch {
+				return [] as unknown as T;
+			}
+		}
+
+		case 'get_playlist': {
+			if (args?.id) {
+				const res = await ytmGetPlaylist(args.id);
+				return res as unknown as T;
+			}
+			return { title: 'Playlist', items: [], owned: false, collaborative: false } as unknown as T;
+		}
+
+		case 'get_album': {
+			if (args?.id) {
+				const res = await ytmGetAlbum(args.id);
+				return res as unknown as T;
+			}
+			return { title: 'Album', items: [], inLibrary: false } as unknown as T;
+		}
+
+		case 'get_artist': {
+			if (args?.id) {
+				const res = await ytmGetArtist(args.id);
+				return res as unknown as T;
+			}
+			return { name: 'Artist', channelId: args?.id || '', subscribed: false, topSongs: [], sections: [] } as unknown as T;
 		}
 
 		case 'play':
@@ -692,7 +763,16 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 		}
 
 		case 'get_account':
-			return { signedIn: false } as unknown as T;
+			return (await ytmGetAccount()) as unknown as T;
+
+		case 'login_webview':
+			openLoginModal();
+			return undefined as unknown as T;
+
+		case 'sign_out':
+			setStoredCookie(null);
+			emitWebEvent('auth-changed', { signedIn: false });
+			return undefined as unknown as T;
 
 		case 'get_account_identities':
 			return [] as unknown as T;
