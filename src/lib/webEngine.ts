@@ -19,24 +19,12 @@ import {
 	ytmGetLibraryAlbums,
 	ytmGetLibraryArtists,
 	ytmGetSongRadio,
+	ytmSearchCards,
 	setStoredCookie,
 	getApiBaseUrl
 } from './ytmusic';
-import { getStoredOAuthSession, clearOAuthSession, fetchOAuthUserPlaylists, fetchOAuthPlaylistPage } from './oauth';
+import { getStoredOAuthSession, clearOAuthSession } from './oauth';
 import { openLoginModal } from './loginModal.svelte';
-
-// Invidious instances with CORS and active API support
-const INVIDIOUS_INSTANCES = [
-	'https://invidious.f5.si'
-];
-
-let currentInstanceIndex = 0;
-function getInstance(): string {
-	return INVIDIOUS_INSTANCES[currentInstanceIndex % INVIDIOUS_INSTANCES.length];
-}
-function rotateInstance(): void {
-	currentInstanceIndex = (currentInstanceIndex + 1) % INVIDIOUS_INSTANCES.length;
-}
 
 // ---------------------------------------------------------------------------
 // Web Event Bus (replaces Tauri event system)
@@ -573,34 +561,8 @@ class WebAudioEngine {
 export const webPlayer = new WebAudioEngine();
 
 // ---------------------------------------------------------------------------
-// Web Data & Invidious / LRCLIB API handlers
+// LRCLIB API handlers
 // ---------------------------------------------------------------------------
-
-export async function webSearch(query: string): Promise<SongItem[]> {
-	const base = getInstance();
-	try {
-		const res = await fetch(
-			`${base}/api/v1/search?q=${encodeURIComponent(query)}&type=video`,
-			{ headers: { Accept: 'application/json' } }
-		);
-		if (!res.ok) return [];
-		const data = await res.json();
-		if (!Array.isArray(data)) return [];
-
-		return data.map((v: any) => ({
-			video_id: v.videoId,
-			title: v.title,
-			artists: v.author,
-			artist_id: v.authorId,
-			duration: formatDuration(v.lengthSeconds),
-			thumbnail: v.videoThumbnails?.[0]?.url || `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`,
-			rating: 'indifferent' as const
-		}));
-	} catch (e) {
-		console.warn('Web search error:', e);
-		return [];
-	}
-}
 
 export async function webGetLyrics(
 	title: string,
@@ -695,76 +657,51 @@ function formatDuration(sec: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Curated Initial Home Feed for Web
+// Curated Initial Home Feed for Web Fallback
 // ---------------------------------------------------------------------------
 export async function webGetHome(): Promise<HomePage> {
-	// Try live trending music from Invidious
-	const base = getInstance();
-	let trendingItems: BrowseItem[] = [];
-	try {
-		const res = await fetch(`${base}/api/v1/trending?type=music`);
-		if (res.ok) {
-			const list = await res.json();
-			if (Array.isArray(list)) {
-				trendingItems = list.slice(0, 16).map((v: any) => ({
-					kind: 'song' as const,
-					id: v.videoId,
-					title: v.title,
-					subtitle: v.author,
-					thumbnail: v.videoThumbnails?.[0]?.url || `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`,
-					duration: formatDuration(v.lengthSeconds)
-				}));
-			}
+	const curatedItems: BrowseItem[] = [
+		{
+			kind: 'song',
+			id: 'fHI8X4OXluQ',
+			title: 'Blinding Lights',
+			subtitle: 'The Weeknd',
+			thumbnail: 'https://i.ytimg.com/vi/fHI8X4OXluQ/hqdefault.jpg',
+			duration: '3:20'
+		},
+		{
+			kind: 'song',
+			id: 'L0MK7qz13bU',
+			title: 'Starboy',
+			subtitle: 'The Weeknd ft. Daft Punk',
+			thumbnail: 'https://i.ytimg.com/vi/L0MK7qz13bU/hqdefault.jpg',
+			duration: '3:50'
+		},
+		{
+			kind: 'song',
+			id: 'JGwWNGJdvx8',
+			title: 'Shape of You',
+			subtitle: 'Ed Sheeran',
+			thumbnail: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
+			duration: '3:53'
+		},
+		{
+			kind: 'song',
+			id: 'H5v3kku4y6Q',
+			title: 'As It Was',
+			subtitle: 'Harry Styles',
+			thumbnail: 'https://i.ytimg.com/vi/H5v3kku4y6Q/hqdefault.jpg',
+			duration: '2:47'
+		},
+		{
+			kind: 'song',
+			id: '0Vwqpox_M-M',
+			title: 'Nightcall',
+			subtitle: 'Kavinsky',
+			thumbnail: 'https://i.ytimg.com/vi/0Vwqpox_M-M/hqdefault.jpg',
+			duration: '4:19'
 		}
-	} catch (e) {
-		console.warn('Failed to load trending items:', e);
-	}
-
-	// Fallback curated popular songs if network is offline or throttled
-	if (!trendingItems.length) {
-		trendingItems = [
-			{
-				kind: 'song',
-				id: 'fHI8X4OXluQ',
-				title: 'Blinding Lights',
-				subtitle: 'The Weeknd',
-				thumbnail: 'https://i.ytimg.com/vi/fHI8X4OXluQ/hqdefault.jpg',
-				duration: '3:20'
-			},
-			{
-				kind: 'song',
-				id: 'L0MK7qz13bU',
-				title: 'Starboy',
-				subtitle: 'The Weeknd ft. Daft Punk',
-				thumbnail: 'https://i.ytimg.com/vi/L0MK7qz13bU/hqdefault.jpg',
-				duration: '3:50'
-			},
-			{
-				kind: 'song',
-				id: 'JGwWNGJdvx8',
-				title: 'Shape of You',
-				subtitle: 'Ed Sheeran',
-				thumbnail: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
-				duration: '3:53'
-			},
-			{
-				kind: 'song',
-				id: 'H5v3kku4y6Q',
-				title: 'As It Was',
-				subtitle: 'Harry Styles',
-				thumbnail: 'https://i.ytimg.com/vi/H5v3kku4y6Q/hqdefault.jpg',
-				duration: '2:47'
-			},
-			{
-				kind: 'song',
-				id: '0Vwqpox_M-M',
-				title: 'Nightcall',
-				subtitle: 'Kavinsky',
-				thumbnail: 'https://i.ytimg.com/vi/0Vwqpox_M-M/hqdefault.jpg',
-				duration: '4:19'
-			}
-		];
-	}
+	];
 
 	return {
 		chips: [
@@ -777,11 +714,11 @@ export async function webGetHome(): Promise<HomePage> {
 		sections: [
 			{
 				title: 'Trending Music',
-				items: trendingItems.slice(0, 8)
+				items: curatedItems
 			},
 			{
 				title: 'Quick Picks',
-				items: trendingItems.slice(8, 16).length ? trendingItems.slice(8, 16) : trendingItems.slice(0, 8)
+				items: curatedItems
 			}
 		]
 	};
@@ -852,56 +789,48 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 		case 'search': {
 			try {
 				const songs = await ytmSearchSongs(args?.query || '');
-				if (songs.length > 0) return songs as unknown as T;
-			} catch {}
-			return (await webSearch(args?.query || '')) as unknown as T;
+				return songs as unknown as T;
+			} catch (e) {
+				console.warn('ytmSearchSongs error:', e);
+				return [] as unknown as T;
+			}
 		}
 
 		case 'search_all': {
 			try {
 				const res = await ytmSearchAll(args?.query || '');
-				if (res.songs.length > 0 || res.albums.length > 0 || res.artists.length > 0) {
-					return res as unknown as T;
-				}
-			} catch {}
-			const songs = await webSearch(args?.query || '');
-			return {
-				top: [],
-				songs: songs.map((s) => ({
-					kind: 'song' as const,
-					id: s.video_id,
-					title: s.title,
-					subtitle: s.artists,
-					thumbnail: s.thumbnail,
-					duration: s.duration
-				})),
-				albums: [],
-				artists: [],
-				playlists: []
-			} as unknown as T;
+				return res as unknown as T;
+			} catch (e) {
+				console.warn('ytmSearchAll error:', e);
+				return {
+					top: [],
+					songs: [],
+					albums: [],
+					artists: [],
+					playlists: []
+				} as unknown as T;
+			}
 		}
 
 		case 'search_cards': {
+			const query = args?.query || '';
+			const category = args?.category || '';
 			try {
-				const all = await ytmSearchAll(args?.query || '');
-				if (args?.category === 'albums') return all.albums as unknown as T;
-				if (args?.category === 'artists') return all.artists as unknown as T;
-				if (args?.category === 'playlists') return all.playlists as unknown as T;
+				const cards = await ytmSearchCards(query, category);
+				if (cards.length > 0) return cards as unknown as T;
+				const all = await ytmSearchAll(query);
+				if (category === 'albums') return all.albums as unknown as T;
+				if (category === 'artists') return all.artists as unknown as T;
+				if (category === 'playlists') return all.playlists as unknown as T;
 				return all.songs as unknown as T;
-			} catch {
+			} catch (e) {
+				console.warn('search_cards error:', e);
 				return [] as unknown as T;
 			}
 		}
 
 		case 'get_playlist': {
 			if (args?.id) {
-				const oauthSession = getStoredOAuthSession();
-				if (oauthSession) {
-					try {
-						const oauthPl = await fetchOAuthPlaylistPage(args.id);
-						if (oauthPl && oauthPl.items.length > 0) return oauthPl as unknown as T;
-					} catch {}
-				}
 				const res = await ytmGetPlaylist(args.id);
 				return res as unknown as T;
 			}
@@ -1087,23 +1016,17 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 		case 'get_library': {
 			const oauthSession = getStoredOAuthSession();
 			let items: BrowseItem[] = [];
-			if (oauthSession) {
-				items = await fetchOAuthUserPlaylists();
-			}
 			try {
 				const ytmPlaylists = await ytmGetLibraryPlaylists();
-				const seen = new Set(items.map((i) => i.id));
-				for (const pl of ytmPlaylists) {
-					if (!seen.has(pl.id)) {
-						items.push(pl);
-						seen.add(pl.id);
-					}
-				}
-			} catch {}
+				items.push(...ytmPlaylists);
+			} catch (e) {
+				console.warn('ytmGetLibraryPlaylists error:', e);
+			}
 
+			const cookie = typeof localStorage !== 'undefined' ? localStorage.getItem('nocturne_ytm_cookie') : null;
 			// Always guarantee Liked Music is present if user has a session or cookie
-			if (items.length === 0 && (oauthSession || (typeof localStorage !== 'undefined' && localStorage.getItem('nocturne_ytm_cookie')))) {
-				items.push({
+			if ((oauthSession || cookie) && !items.some((i) => i.id === 'VLLM' || i.id === 'LM')) {
+				items.unshift({
 					kind: 'playlist',
 					id: 'VLLM',
 					title: 'Liked Music',

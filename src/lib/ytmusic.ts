@@ -10,7 +10,7 @@ import type {
 	SearchResults,
 	SongItem
 } from './api';
-import { getStoredOAuthSession, fetchOAuthPlaylistPage } from './oauth';
+import { getStoredOAuthSession } from './oauth';
 
 const YTM_CLIENT_CONTEXT = {
 	client: {
@@ -53,6 +53,10 @@ async function postYtm(endpoint: string, body: Record<string, any>): Promise<any
 	if (cookie) {
 		headers['x-ytm-cookie'] = cookie;
 	}
+	const oauthSession = getStoredOAuthSession();
+	if (oauthSession?.accessToken) {
+		headers['Authorization'] = `Bearer ${oauthSession.accessToken}`;
+	}
 
 	const apiBase = getApiBaseUrl();
 	const res = await fetch(`${apiBase}/api/ytm/${endpoint}`, {
@@ -79,7 +83,7 @@ function findAll(obj: any, key: string, results: any[] = []): any[] {
 	if (Array.isArray(obj)) {
 		for (const item of obj) findAll(item, key, results);
 	} else {
-		for (const k of Object.keys(obj)) {
+		for (const k in obj) {
 			if (k === key) results.push(obj[k]);
 			findAll(obj[k], key, results);
 		}
@@ -87,27 +91,51 @@ function findAll(obj: any, key: string, results: any[] = []): any[] {
 	return results;
 }
 
-function getRunsText(runsObj: any): string {
-	if (!runsObj) return '';
-	if (typeof runsObj === 'string') return runsObj;
-	if (Array.isArray(runsObj.runs)) {
-		return runsObj.runs.map((r: any) => r?.text || '').join('');
+function getRunsText(obj: any): string {
+	if (!obj) return '';
+	if (obj.simpleText) return obj.simpleText;
+	if (Array.isArray(obj.runs)) {
+		return obj.runs.map((r: any) => r.text || '').join('');
 	}
-	if (runsObj.simpleText) return runsObj.simpleText;
 	return '';
 }
 
 function getThumbnail(thumbnailsObj: any): string | undefined {
-	if (!thumbnailsObj) return undefined;
-	const thumbs = thumbnailsObj.thumbnails || thumbnailsObj.sources || thumbnailsObj;
-	if (Array.isArray(thumbs) && thumbs.length > 0) {
-		return thumbs[thumbs.length - 1]?.url;
+	const list = thumbnailsObj?.thumbnails || (Array.isArray(thumbnailsObj) ? thumbnailsObj : null);
+	if (Array.isArray(list) && list.length > 0) {
+		return list[list.length - 1]?.url;
 	}
 	return undefined;
 }
 
-function parseSongRow(renderer: any): SongItem | null {
+export function getMusicVideoType(renderer: any): string | undefined {
+	if (!renderer) return undefined;
+	const direct =
+		renderer.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType ||
+		renderer.navigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType ||
+		renderer.onTap?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType ||
+		renderer.doubleTap?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
+	if (direct) return direct;
+
+	const configs = findAll(renderer, 'watchEndpointMusicConfig');
+	for (const c of configs) {
+		if (c?.musicVideoType) return c.musicVideoType;
+	}
+	return undefined;
+}
+
+export function isAudioTrack(renderer: any, allowOmv = false): boolean {
+	const mvt = getMusicVideoType(renderer);
+	if (!mvt) return true;
+	// Reject non-music content: user-generated YouTube videos, podcast episodes, etc.
+	if (mvt === 'MUSIC_VIDEO_TYPE_UGC' || mvt === 'MUSIC_VIDEO_TYPE_PODCAST_EPISODE') return false;
+	if (allowOmv) return true;
+	return mvt === 'MUSIC_VIDEO_TYPE_ATV' || mvt === 'MUSIC_VIDEO_TYPE_PRIVATELY_OWNED_TRACK';
+}
+
+function parseSongRow(renderer: any, allowOmv = false): SongItem | null {
 	if (!renderer) return null;
+	if (!isAudioTrack(renderer, allowOmv)) return null;
 
 	const videoId =
 		renderer.playlistItemData?.videoId ||
@@ -190,6 +218,7 @@ function parseTwoRowItem(renderer: any): BrowseItem | null {
 	let id = '';
 
 	if (nav?.videoId) {
+		if (!isAudioTrack(renderer)) return null;
 		kind = 'song';
 		id = nav.videoId;
 	} else if (nav?.browseId) {
@@ -202,6 +231,7 @@ function parseTwoRowItem(renderer: any): BrowseItem | null {
 			kind = 'playlist';
 		}
 	} else if (renderer.playlistItemData?.videoId) {
+		if (!isAudioTrack(renderer)) return null;
 		kind = 'song';
 		id = renderer.playlistItemData.videoId;
 	}
@@ -271,6 +301,7 @@ export async function ytmSearchAll(query: string): Promise<SearchResults> {
 			const videoId = card.onTap?.watchEndpoint?.videoId || card.title?.runs?.[0]?.navigationEndpoint?.watchEndpoint?.videoId;
 
 			if (browseId || videoId) {
+				if (videoId && !isAudioTrack(card)) continue;
 				results.top.push({
 					kind: videoId ? 'song' : browseId?.startsWith('UC') ? 'artist' : 'album',
 					id: videoId || browseId!,
@@ -339,7 +370,7 @@ export async function ytmSearchAll(query: string): Promise<SearchResults> {
 				item.doubleTap?.watchEndpoint?.videoId ||
 				titleCol?.runs?.[0]?.navigationEndpoint?.watchEndpoint?.videoId;
 
-			if (videoId) {
+			if (videoId && isAudioTrack(item)) {
 				let duration = '';
 				let artists = subtitle;
 				const parts = subtitle.split('•').map((s: string) => s.trim());
@@ -479,7 +510,7 @@ export async function ytmGetPlaylist(id: string): Promise<PlaylistPage> {
 		const items: SongItem[] = [];
 		const listItems = findAll(data, 'musicResponsiveListItemRenderer');
 		for (const li of listItems) {
-			const s = parseSongRow(li);
+			const s = parseSongRow(li, true);
 			if (s) items.push(s);
 		}
 
@@ -495,16 +526,6 @@ export async function ytmGetPlaylist(id: string): Promise<PlaylistPage> {
 		}
 	} catch (e) {
 		console.warn('ytmGetPlaylist InnerTube error:', e);
-	}
-
-	// Fallback to Google OAuth YouTube Data API if authenticated
-	try {
-		const oauthPage = await fetchOAuthPlaylistPage(id);
-		if (oauthPage && oauthPage.items.length > 0) {
-			return oauthPage;
-		}
-	} catch (e) {
-		console.warn('ytmGetPlaylist OAuth fallback error:', e);
 	}
 
 	return { title: 'Playlist', items: [], owned: false, collaborative: false };
@@ -669,5 +690,46 @@ export async function ytmGetSongRadio(videoId: string): Promise<SongItem[]> {
 		return [];
 	}
 }
+
+export async function ytmSearchCards(query: string, category: string): Promise<BrowseItem[]> {
+	let params: string | undefined = undefined;
+	if (category === 'albums') params = 'EgWKAQIYAWoKEAkQChAFEAMQBA==';
+	else if (category === 'artists') params = 'EgWKAQIgAWoKEAkQChAFEAMQBA==';
+	else if (category === 'playlists') params = 'EgeKAQQoAEABagoQAxAEEAoQCRAF';
+
+	if (!params) return [];
+
+	try {
+		const data = await postYtm('search', { query, params });
+		const list = findAll(data, 'musicResponsiveListItemRenderer');
+		const items: BrowseItem[] = [];
+		for (const r of list) {
+			const item = parseTwoRowItem(r);
+			if (item) {
+				if (category === 'albums') item.kind = 'album';
+				else if (category === 'artists') item.kind = 'artist';
+				else if (category === 'playlists') item.kind = 'playlist';
+				items.push(item);
+			}
+		}
+		if (!items.length) {
+			const twoRow = findAll(data, 'musicTwoRowItemRenderer');
+			for (const r of twoRow) {
+				const item = parseTwoRowItem(r);
+				if (item) {
+					if (category === 'albums') item.kind = 'album';
+					else if (category === 'artists') item.kind = 'artist';
+					else if (category === 'playlists') item.kind = 'playlist';
+					items.push(item);
+				}
+			}
+		}
+		return items;
+	} catch (e) {
+		console.warn('ytmSearchCards error:', e);
+		return [];
+	}
+}
+
 
 

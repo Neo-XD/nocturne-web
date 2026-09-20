@@ -237,6 +237,12 @@ export default {
 					}
 				}
 
+				// Forward incoming Authorization header (e.g. OAuth Bearer) if not already set
+				const incomingAuth = request.headers.get('Authorization') || request.headers.get('authorization');
+				if (incomingAuth && !headers.has('Authorization')) {
+					headers.set('Authorization', incomingAuth);
+				}
+
 				const bodyText = request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined;
 
 				const init: RequestInit = {
