@@ -172,6 +172,19 @@ export async function signInWithGoogleOAuth(): Promise<Account> {
 	});
 }
 
+export interface OAuthApiNotice {
+	type: 'error' | 'warning' | 'info';
+	message: string;
+	link?: string;
+	linkText?: string;
+}
+
+export let oauthApiNotice = $state<OAuthApiNotice | null>(null);
+
+export function clearOAuthNotice(): void {
+	oauthApiNotice = null;
+}
+
 export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
 	const session = getStoredOAuthSession();
 	if (!session?.accessToken) return [];
@@ -194,16 +207,29 @@ export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
 		if (!res.ok) {
 			const err = await res.json().catch(() => ({}));
 			console.warn('YouTube Data API playlist fetch failed:', res.status, err);
+
 			if (res.status === 401) {
 				clearOAuthSession();
+				return baseItems;
+			}
+
+			if (res.status === 403) {
+				oauthApiNotice = {
+					type: 'warning',
+					message: 'YouTube Data API v3 is not enabled in your Google Cloud project. Enable it to sync your YouTube playlists.',
+					link: 'https://console.cloud.google.com/apis/library/youtube.googleapis.com',
+					linkText: 'Enable YouTube Data API v3'
+				};
 			}
 			return baseItems;
 		}
 
+		// Successfully retrieved playlists
+		oauthApiNotice = null;
 		const data = await res.json();
 		const items: BrowseItem[] = (data.items || []).map((p: any) => ({
 			kind: 'playlist' as const,
-			id: p.id,
+			id: p.id.startsWith('VL') ? p.id : `VL${p.id}`,
 			title: p.snippet?.title || 'Untitled Playlist',
 			subtitle: `${p.contentDetails?.itemCount || 0} tracks`,
 			thumbnail:
@@ -231,6 +257,25 @@ export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage |
 	}
 
 	try {
+		let title = isLiked ? 'Liked Music' : 'Playlist';
+		let description: string | undefined = undefined;
+
+		if (!isLiked) {
+			try {
+				const plInfoRes = await fetch(
+					`https://www.googleapis.com/youtube/v3/playlists?part=snippet&id=${encodeURIComponent(cleanId)}`,
+					{ headers: { Authorization: `Bearer ${session.accessToken}` } }
+				);
+				if (plInfoRes.ok) {
+					const plInfoData = await plInfoRes.json();
+					if (plInfoData.items?.[0]?.snippet?.title) {
+						title = plInfoData.items[0].snippet.title;
+						description = plInfoData.items[0].snippet.description;
+					}
+				}
+			} catch {}
+		}
+
 		const res = await fetch(
 			`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(cleanId)}&maxResults=50`,
 			{ headers: { Authorization: `Bearer ${session.accessToken}` } }
@@ -241,7 +286,7 @@ export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage |
 		const items: SongItem[] = (data.items || [])
 			.map((item: any) => {
 				const videoId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
-				const title = item.snippet?.title || 'Unknown Title';
+				const songTitle = item.snippet?.title || 'Unknown Title';
 				const artist = item.snippet?.videoOwnerChannelTitle || item.snippet?.channelTitle || 'Unknown Artist';
 				const thumb =
 					item.snippet?.thumbnails?.high?.url ||
@@ -250,7 +295,7 @@ export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage |
 
 				return {
 					video_id: videoId,
-					title,
+					title: songTitle,
 					artists: artist,
 					artist_id: item.snippet?.videoOwnerChannelId,
 					thumbnail: thumb || (videoId ? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` : undefined),
@@ -261,7 +306,8 @@ export async function fetchOAuthPlaylistPage(id: string): Promise<PlaylistPage |
 			.filter((s: SongItem) => !!s.video_id && s.title !== 'Private video' && s.title !== 'Deleted video');
 
 		return {
-			title: isLiked ? 'Liked Music' : 'Playlist',
+			title,
+			description,
 			subtitle: `${items.length} songs`,
 			thumbnail: items[0]?.thumbnail,
 			items,

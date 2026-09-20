@@ -19,6 +19,38 @@ function extractSapisid(cookie: string): string | null {
 }
 
 async function resolveAudioStream(videoId: string): Promise<string | null> {
+	// 1. Try Invidious instances that resolve direct googlevideo audio streams
+	const invidiousInstances = [
+		'https://invidious.f5.si',
+		'https://invidious.nerdvpn.de',
+		'https://inv.vern.cc'
+	];
+
+	for (const inst of invidiousInstances) {
+		try {
+			const invResp = await fetch(`${inst}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+				headers: { Accept: 'application/json' },
+				signal: AbortSignal.timeout(3500)
+			});
+			if (invResp.ok) {
+				const data: any = await invResp.json();
+				const formats = data.adaptiveFormats;
+				if (Array.isArray(formats)) {
+					const audioFormats = formats.filter(
+						(f: any) => (f.type?.startsWith('audio/') || f.mimeType?.startsWith('audio/')) && f.url
+					);
+					if (audioFormats.length) {
+						const mp4a = audioFormats.find((f: any) => (f.type || f.mimeType || '').includes('audio/mp4'));
+						return mp4a?.url || audioFormats[0].url;
+					}
+				}
+			}
+		} catch {
+			// Continue to next instance
+		}
+	}
+
+	// 2. Fallback to InnerTube ANDROID_VR client
 	try {
 		const playerPayload = {
 			context: {

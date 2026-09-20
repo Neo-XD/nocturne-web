@@ -220,7 +220,9 @@
 							{/if}
 						</Button>
 
-
+						<p class="text-[11px] text-muted-foreground/80 leading-normal">
+							Note: Requires <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline font-medium">YouTube Data API v3</a> enabled in your Google Cloud project (1007597393955) for playlist access.
+						</p>
 					</div>
 
 					<!-- Status notifications -->
