@@ -10,8 +10,8 @@ export interface OAuthSession {
 const STORAGE_KEY_SESSION = 'nocturne_oauth_session';
 const STORAGE_KEY_CLIENT_ID = 'nocturne_google_client_id';
 
-// Default / fallback client ID (can be customized by user in settings/login modal)
-const DEFAULT_CLIENT_ID = '';
+// Default Google OAuth Client ID for Nocturne Web
+const DEFAULT_CLIENT_ID = '444918660155-0fb8b8puhnsdq4201pvofl1orf1s44da.apps.googleusercontent.com';
 
 declare global {
 	interface Window {
