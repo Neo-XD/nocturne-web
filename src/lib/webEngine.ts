@@ -18,7 +18,8 @@ import {
 	ytmGetLibraryPlaylists,
 	ytmGetLibraryAlbums,
 	ytmGetLibraryArtists,
-	setStoredCookie
+	setStoredCookie,
+	getApiBaseUrl
 } from './ytmusic';
 import { getStoredOAuthSession, clearOAuthSession, fetchOAuthUserPlaylists, fetchOAuthPlaylistPage } from './oauth';
 import { openLoginModal } from './loginModal.svelte';
@@ -407,7 +408,8 @@ class WebAudioEngine {
 	private async fallbackToAudioElement(videoId: string, title?: string): Promise<void> {
 		if (!this.audio) return;
 		try {
-			const streamUrl = `/api/stream?id=${encodeURIComponent(videoId)}`;
+			const apiBase = getApiBaseUrl();
+			const streamUrl = `${apiBase}/api/stream?id=${encodeURIComponent(videoId)}`;
 			this.audio.src = streamUrl;
 			await this.audio.play();
 			this.paused = false;
@@ -1059,8 +1061,9 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 				const title = args.title || 'track';
 				const artist = args.artist || 'Unknown Artist';
 				const cleanName = `${title} - ${artist}`.replace(/[^a-zA-Z0-9_\-\. ]/g, '_');
+				const apiBase = getApiBaseUrl();
 				const a = document.createElement('a');
-				a.href = `/api/stream?id=${encodeURIComponent(args.videoId)}&download=1&title=${encodeURIComponent(cleanName)}`;
+				a.href = `${apiBase}/api/stream?id=${encodeURIComponent(args.videoId)}&download=1&title=${encodeURIComponent(cleanName)}`;
 				a.download = `${cleanName}.m4a`;
 				document.body.appendChild(a);
 				a.click();
@@ -1073,11 +1076,12 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 		case 'download_playlist': {
 			const items: SongItem[] = args?.items || [];
 			if (typeof window !== 'undefined' && items.length > 0) {
+				const apiBase = getApiBaseUrl();
 				items.forEach((song, i) => {
 					const cleanName = `${song.title} - ${song.artists}`.replace(/[^a-zA-Z0-9_\-\. ]/g, '_');
 					setTimeout(() => {
 						const a = document.createElement('a');
-						a.href = `/api/stream?id=${encodeURIComponent(song.video_id)}&download=1&title=${encodeURIComponent(cleanName)}`;
+						a.href = `${apiBase}/api/stream?id=${encodeURIComponent(song.video_id)}&download=1&title=${encodeURIComponent(cleanName)}`;
 						a.download = `${cleanName}.m4a`;
 						document.body.appendChild(a);
 						a.click();

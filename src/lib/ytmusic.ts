@@ -37,6 +37,14 @@ export function setStoredCookie(cookie: string | null): void {
 	}
 }
 
+export function getApiBaseUrl(): string {
+	if (typeof window === 'undefined') return '';
+	if (window.location.hostname.endsWith('github.io') || window.location.hostname.endsWith('github.dev')) {
+		return 'https://nocturne-web.amritanshu-praveen.workers.dev';
+	}
+	return '';
+}
+
 async function postYtm(endpoint: string, body: Record<string, any>): Promise<any> {
 	const headers: Record<string, string> = {
 		'Content-Type': 'application/json'
@@ -46,7 +54,8 @@ async function postYtm(endpoint: string, body: Record<string, any>): Promise<any
 		headers['x-ytm-cookie'] = cookie;
 	}
 
-	const res = await fetch(`/api/ytm/${endpoint}`, {
+	const apiBase = getApiBaseUrl();
+	const res = await fetch(`${apiBase}/api/ytm/${endpoint}`, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify({
