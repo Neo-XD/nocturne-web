@@ -224,7 +224,10 @@
 			cater(fresh, params);
 			seekForgotten(params); // background: the feed is already on screen
 		} catch (e) {
-			if (!hit) error = String(e);
+			console.warn('Home load failed:', e);
+			if (!hit && !home) {
+				error = null;
+			}
 		} finally {
 			loading = false;
 		}

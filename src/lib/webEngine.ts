@@ -111,6 +111,7 @@ class WebAudioEngine {
 		repeat: 'off',
 		sourceName: null
 	};
+	public activeMode: 'youtube' | 'audio' | 'none' = 'none';
 	public now: NowPlaying | null = null;
 	public paused = true;
 	public position = 0;
@@ -125,42 +126,43 @@ class WebAudioEngine {
 			this.audio.volume = this.volume / 100;
 
 			this.audio.addEventListener('timeupdate', () => {
-				if (!this.audio || (this.ytPlayer && this.ytReady)) return;
+				if (this.activeMode !== 'audio' || !this.audio) return;
 				this.position = this.audio.currentTime;
-				emitWebEvent('position', { position: this.position });
+				emitWebEvent('position', this.position);
 			});
 
 			this.audio.addEventListener('durationchange', () => {
-				if (!this.audio || !Number.isFinite(this.audio.duration) || (this.ytPlayer && this.ytReady)) return;
+				if (this.activeMode !== 'audio' || !this.audio || !Number.isFinite(this.audio.duration)) return;
 				this.duration = this.audio.duration;
-				emitWebEvent('duration', { duration: this.duration });
+				emitWebEvent('duration', this.duration);
 			});
 
 			this.audio.addEventListener('loadedmetadata', () => {
-				if (!this.audio || !Number.isFinite(this.audio.duration) || (this.ytPlayer && this.ytReady)) return;
+				if (this.activeMode !== 'audio' || !this.audio || !Number.isFinite(this.audio.duration)) return;
 				this.duration = this.audio.duration;
-				emitWebEvent('duration', { duration: this.duration });
+				emitWebEvent('duration', this.duration);
 			});
 
 			this.audio.addEventListener('play', () => {
-				if (this.ytPlayer && this.ytReady) return;
+				if (this.activeMode !== 'audio') return;
 				this.paused = false;
 				emitWebEvent('playback-state', 'playing');
+				this.startProgressTicker();
 			});
 
 			this.audio.addEventListener('pause', () => {
-				if (this.ytPlayer && this.ytReady) return;
+				if (this.activeMode !== 'audio') return;
 				this.paused = true;
 				emitWebEvent('playback-state', 'paused');
 			});
 
 			this.audio.addEventListener('ended', () => {
-				if (this.ytPlayer && this.ytReady) return;
+				if (this.activeMode !== 'audio') return;
 				this.handleTrackEnded();
 			});
 
 			this.audio.addEventListener('error', (e) => {
-				if (this.ytPlayer && this.ytReady) return;
+				if (this.activeMode !== 'audio') return;
 				console.warn('HTML5 Audio playback error:', e);
 				emitWebEvent('playback-error', 'Playback stream error. Skipping to next track...');
 				setTimeout(() => this.nextTrack(), 1500);
@@ -255,6 +257,7 @@ class WebAudioEngine {
 							if (event.data === 1) {
 								this.paused = false;
 								emitWebEvent('playback-state', 'playing');
+								this.startProgressTicker();
 							} else if (event.data === 2) {
 								this.paused = true;
 								emitWebEvent('playback-state', 'paused');
@@ -282,19 +285,35 @@ class WebAudioEngine {
 	private startProgressTicker() {
 		if (this.progressInterval) clearInterval(this.progressInterval);
 		this.progressInterval = setInterval(() => {
-			if (!this.ytPlayer || !this.ytReady || this.paused) return;
-			try {
-				const cur = this.ytPlayer.getCurrentTime();
-				const dur = this.ytPlayer.getDuration();
-				if (typeof cur === 'number' && Number.isFinite(cur)) {
-					this.position = cur;
-					emitWebEvent('position', { position: cur });
+			if (this.paused) return;
+
+			if (this.activeMode === 'youtube' && this.ytPlayer && this.ytReady) {
+				try {
+					const cur = this.ytPlayer.getCurrentTime();
+					const dur = this.ytPlayer.getDuration();
+					if (typeof cur === 'number' && Number.isFinite(cur) && cur >= 0) {
+						this.position = cur;
+						emitWebEvent('position', cur);
+						emitWebEvent('position', { position: cur });
+					}
+					if (typeof dur === 'number' && Number.isFinite(dur) && dur > 0) {
+						this.duration = dur;
+						emitWebEvent('duration', dur);
+						emitWebEvent('duration', { duration: dur });
+					}
+				} catch {}
+			} else if (this.activeMode === 'audio' && this.audio) {
+				if (Number.isFinite(this.audio.currentTime)) {
+					this.position = this.audio.currentTime;
+					emitWebEvent('position', this.position);
+					emitWebEvent('position', { position: this.position });
 				}
-				if (typeof dur === 'number' && Number.isFinite(dur) && dur > 0) {
-					this.duration = dur;
-					emitWebEvent('duration', { duration: dur });
+				if (Number.isFinite(this.audio.duration) && this.audio.duration > 0) {
+					this.duration = this.audio.duration;
+					emitWebEvent('duration', this.duration);
+					emitWebEvent('duration', { duration: this.duration });
 				}
-			} catch {}
+			}
 		}, 250);
 	}
 
@@ -391,9 +410,11 @@ class WebAudioEngine {
 					this.audio.pause();
 					this.audio.src = '';
 				}
+				this.activeMode = 'youtube';
 				this.ytPlayer.loadVideoById(item.video_id);
 				this.ytPlayer.playVideo();
 				this.paused = false;
+				this.startProgressTicker();
 				emitWebEvent('playback-state', 'playing');
 				return;
 			}
@@ -408,11 +429,13 @@ class WebAudioEngine {
 	private async fallbackToAudioElement(videoId: string, title?: string): Promise<void> {
 		if (!this.audio) return;
 		try {
+			this.activeMode = 'audio';
 			const apiBase = getApiBaseUrl();
 			const streamUrl = `${apiBase}/api/stream?id=${encodeURIComponent(videoId)}`;
 			this.audio.src = streamUrl;
 			await this.audio.play();
 			this.paused = false;
+			this.startProgressTicker();
 			emitWebEvent('playback-state', 'playing');
 		} catch (e: any) {
 			if (e.name === 'AbortError') return;
@@ -443,6 +466,7 @@ class WebAudioEngine {
 		} else if (this.audio) {
 			this.audio.play().catch(() => {});
 		}
+		this.startProgressTicker();
 		emitWebEvent('playback-state', 'playing');
 	}
 
@@ -453,7 +477,7 @@ class WebAudioEngine {
 
 	public seek(pos: number): void {
 		this.position = pos;
-		if (this.ytPlayer && this.ytReady) {
+		if (this.activeMode === 'youtube' && this.ytPlayer && this.ytReady) {
 			try {
 				this.ytPlayer.seekTo(pos, true);
 			} catch {}
@@ -461,6 +485,7 @@ class WebAudioEngine {
 		if (this.audio) {
 			this.audio.currentTime = pos;
 		}
+		emitWebEvent('position', pos);
 		emitWebEvent('position', { position: pos });
 	}
 
@@ -739,9 +764,55 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 		case 'get_home': {
 			try {
 				const res = await ytmGetHome(args?.params);
-				if (res.sections.length > 0) return res as unknown as T;
-			} catch {}
-			return (await webGetHome()) as unknown as T;
+				if (res && res.sections && res.sections.length > 0) return res as unknown as T;
+			} catch (e) {
+				console.warn('ytmGetHome failed, falling back:', e);
+			}
+			try {
+				const fallback = await webGetHome();
+				return fallback as unknown as T;
+			} catch (fbErr) {
+				console.warn('webGetHome failed, using hardcoded fallback:', fbErr);
+				return {
+					chips: [
+						{ title: 'Relax', params: 'relax' },
+						{ title: 'Workout', params: 'workout' },
+						{ title: 'Focus', params: 'focus' },
+						{ title: 'Energize', params: 'energize' }
+					],
+					sections: [
+						{
+							title: 'Trending Music',
+							items: [
+								{
+									kind: 'song',
+									id: 'fHI8X4OXluQ',
+									title: 'Blinding Lights',
+									subtitle: 'The Weeknd',
+									thumbnail: 'https://i.ytimg.com/vi/fHI8X4OXluQ/hqdefault.jpg',
+									duration: '3:20'
+								},
+								{
+									kind: 'song',
+									id: 'L0MK7qz13bU',
+									title: 'Starboy',
+									subtitle: 'The Weeknd ft. Daft Punk',
+									thumbnail: 'https://i.ytimg.com/vi/L0MK7qz13bU/hqdefault.jpg',
+									duration: '3:50'
+								},
+								{
+									kind: 'song',
+									id: 'JGwWNGJdvx8',
+									title: 'Shape of You',
+									subtitle: 'Ed Sheeran',
+									thumbnail: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
+									duration: '3:53'
+								}
+							]
+						}
+					]
+				} as unknown as T;
+			}
 		}
 
 		case 'get_home_more':
@@ -916,6 +987,15 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 
 		case 'get_queue':
 			return webPlayer.queue as unknown as T;
+
+		case 'get_playback':
+			return {
+				now: webPlayer.now,
+				paused: webPlayer.paused,
+				position: webPlayer.position,
+				duration: webPlayer.duration,
+				volume: webPlayer.volume
+			} as unknown as T;
 
 		case 'get_settings': {
 			if (typeof localStorage === 'undefined') return {} as unknown as T;

@@ -124,10 +124,27 @@ export default {
 			// Audio streaming proxy
 			if (url.pathname === '/api/stream') {
 				const videoId = url.searchParams.get('id');
-				if (!videoId) return new Response('Missing id', { status: 400 });
+				if (!videoId) {
+					return new Response(JSON.stringify({ error: 'Missing id parameter' }), {
+						status: 400,
+						headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+					});
+				}
 
+				const isDownload = url.searchParams.get('download') === '1';
 				const audioUrl = await resolveAudioStream(videoId);
-				if (!audioUrl) return new Response('Audio stream not found', { status: 404 });
+
+				if (!audioUrl) {
+					// If stream cannot be resolved directly on datacenter IP and user wants to download,
+					// redirect to Cobalt which handles browser audio extraction
+					if (isDownload) {
+						return Response.redirect(`https://cobalt.tools/#https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, 302);
+					}
+					return new Response(JSON.stringify({ error: 'Audio stream not found or restricted' }), {
+						status: 404,
+						headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+					});
+				}
 
 				const forwardHeaders = new Headers();
 				const range = request.headers.get('range');
@@ -140,9 +157,20 @@ export default {
 						headers: forwardHeaders
 					});
 
+					if (!streamResp.ok) {
+						if (isDownload) {
+							return Response.redirect(`https://cobalt.tools/#https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, 302);
+						}
+						return new Response(JSON.stringify({ error: `Upstream stream returned ${streamResp.status}` }), {
+							status: streamResp.status,
+							headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+						});
+					}
+
 					const respHeaders = new Headers();
 					respHeaders.set('Access-Control-Allow-Origin', '*');
 					respHeaders.set('Access-Control-Allow-Headers', '*');
+					respHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 					respHeaders.set('Accept-Ranges', 'bytes');
 					if (streamResp.headers.has('Content-Type')) {
 						respHeaders.set('Content-Type', streamResp.headers.get('Content-Type')!);
@@ -156,7 +184,7 @@ export default {
 						respHeaders.set('Content-Range', streamResp.headers.get('Content-Range')!);
 					}
 
-					if (url.searchParams.get('download') === '1') {
+					if (isDownload) {
 						const title = url.searchParams.get('title') || 'track';
 						const cleanTitle = title.replace(/[^a-zA-Z0-9_\-\. ]/g, '_');
 						respHeaders.set('Content-Disposition', `attachment; filename="${cleanTitle}.m4a"`);
@@ -168,13 +196,19 @@ export default {
 						headers: respHeaders
 					});
 				} catch (err: any) {
-					return new Response(`Stream fetch failed: ${err?.message || err}`, { status: 502 });
+					if (isDownload) {
+						return Response.redirect(`https://cobalt.tools/#https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, 302);
+					}
+					return new Response(JSON.stringify({ error: `Stream fetch failed: ${err?.message || err}` }), {
+						status: 502,
+						headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+					});
 				}
 			}
 
 			// Proxy YouTube Music InnerTube requests
-			if (url.pathname.startsWith('/api/ytm/')) {
-				const subpath = url.pathname.replace(/^\/api\/ytm\//, '');
+			if (url.pathname === '/api/ytm' || url.pathname.startsWith('/api/ytm/')) {
+				const subpath = url.pathname.replace(/^\/api\/ytm\/?/, '') || 'browse';
 				const targetUrl = `https://music.youtube.com/youtubei/v1/${subpath}${url.search}`;
 
 				const headers = new Headers();
@@ -203,10 +237,12 @@ export default {
 					}
 				}
 
+				const bodyText = request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined;
+
 				const init: RequestInit = {
 					method: request.method,
 					headers,
-					body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined
+					body: bodyText
 				};
 
 				try {
@@ -232,18 +268,41 @@ export default {
 				}
 			}
 
+			// Do not fall through to static assets for API routes
+			if (url.pathname.startsWith('/api/')) {
+				return new Response(JSON.stringify({ error: 'Endpoint not found' }), {
+					status: 404,
+					headers: {
+						'Content-Type': 'application/json',
+						'Access-Control-Allow-Origin': '*'
+					}
+				});
+			}
+
+			// Only GET and HEAD for static assets
+			if (request.method !== 'GET' && request.method !== 'HEAD') {
+				return new Response('Method Not Allowed', { status: 405 });
+			}
+
 			// Serve static assets with SPA routing fallback (rewrite 404 navigation to /index.html)
+			// Crucial: create a clean GET request for fallback rather than disturbing the original request stream
 			let assetResp = await env.ASSETS.fetch(request);
 			if (assetResp.status === 404 && !url.pathname.includes('.')) {
 				const indexUrl = new URL('/index.html', request.url);
-				assetResp = await env.ASSETS.fetch(new Request(indexUrl, request));
+				assetResp = await env.ASSETS.fetch(new Request(indexUrl.toString(), {
+					method: 'GET',
+					headers: request.headers
+				}));
 			}
 			return assetResp;
 		} catch (topErr: any) {
 			console.error('Unhandled worker exception:', topErr);
 			return new Response(`Worker internal error: ${topErr?.message || topErr}`, {
 				status: 500,
-				headers: { 'Content-Type': 'text/plain' }
+				headers: {
+					'Content-Type': 'text/plain',
+					'Access-Control-Allow-Origin': '*'
+				}
 			});
 		}
 	}

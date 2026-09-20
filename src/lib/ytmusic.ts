@@ -39,7 +39,7 @@ export function setStoredCookie(cookie: string | null): void {
 
 export function getApiBaseUrl(): string {
 	if (typeof window === 'undefined') return '';
-	if (window.location.hostname.endsWith('github.io') || window.location.hostname.endsWith('github.dev')) {
+	if (window.location.hostname !== 'nocturne-web.amritanshu-praveen.workers.dev') {
 		return 'https://nocturne-web.amritanshu-praveen.workers.dev';
 	}
 	return '';
