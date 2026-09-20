@@ -638,3 +638,36 @@ export async function ytmGetLibraryArtists(): Promise<BrowseItem[]> {
 	}
 }
 
+export async function ytmGetSongRadio(videoId: string): Promise<SongItem[]> {
+	try {
+		const data = await postYtm('next', {
+			videoId,
+			playlistId: `RDAMVM${videoId}`,
+			isAudioOnly: true
+		});
+		const allRenderers = findAll(data, 'playlistPanelVideoRenderer');
+		const items: SongItem[] = [];
+		for (const r of allRenderers) {
+			if (!r.videoId) continue;
+			const title = r.title?.runs?.map((x: any) => x.text).join('') || 'Unknown Title';
+			const artists = r.shortBylineText?.runs?.map((x: any) => x.text).join('') || 'Unknown Artist';
+			const duration = r.lengthText?.runs?.map((x: any) => x.text).join('') || '3:00';
+			const thumb = r.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${r.videoId}/mqdefault.jpg`;
+			items.push({
+				video_id: r.videoId,
+				title,
+				artists,
+				duration,
+				thumbnail: thumb,
+				rating: 'indifferent',
+				autoplay: true
+			});
+		}
+		return items;
+	} catch (e) {
+		console.warn('ytmGetSongRadio error:', e);
+		return [];
+	}
+}
+
+

@@ -18,6 +18,7 @@ import {
 	ytmGetLibraryPlaylists,
 	ytmGetLibraryAlbums,
 	ytmGetLibraryArtists,
+	ytmGetSongRadio,
 	setStoredCookie,
 	getApiBaseUrl
 } from './ytmusic';
@@ -322,12 +323,31 @@ class WebAudioEngine {
 		if (existingIndex !== -1) {
 			this.queue.currentIndex = existingIndex;
 		} else {
-			this.queue.items = [item, ...this.queue.items];
+			this.queue.items = [item];
 			this.queue.currentIndex = 0;
+			this.queue.sourceName = `${item.title} Radio`;
 		}
 
 		emitWebEvent('queue-changed', this.queue);
 		await this.loadAndStreamTrack(item);
+
+		// Populate autoplay / radio queue in background so endless play works
+		void this.fillRadioQueue(item.video_id);
+	}
+
+	public async fillRadioQueue(videoId: string): Promise<void> {
+		try {
+			const radioTracks = await ytmGetSongRadio(videoId);
+			if (!radioTracks.length) return;
+			const existingIds = new Set(this.queue.items.map((i) => i.video_id));
+			const toAdd = radioTracks.filter((t) => !existingIds.has(t.video_id));
+			if (toAdd.length > 0) {
+				this.queue.items = [...this.queue.items, ...toAdd];
+				emitWebEvent('queue-changed', this.queue);
+			}
+		} catch (e) {
+			console.debug('Failed to fill radio queue:', e);
+		}
 	}
 
 	public async playIndex(index: number): Promise<void> {
@@ -514,6 +534,17 @@ class WebAudioEngine {
 			if (this.queue.repeat === 'all') {
 				nextIdx = 0;
 			} else {
+				const current = this.queue.items[this.queue.currentIndex];
+				if (current) {
+					void this.fillRadioQueue(current.video_id).then(() => {
+						if (this.queue.currentIndex + 1 < this.queue.items.length) {
+							void this.playIndex(this.queue.currentIndex + 1);
+						} else {
+							this.pause();
+						}
+					});
+					return;
+				}
 				this.pause();
 				return;
 			}
@@ -891,6 +922,18 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 				return res as unknown as T;
 			}
 			return { name: 'Artist', channelId: args?.id || '', subscribed: false, topSongs: [], sections: [] } as unknown as T;
+		}
+
+		case 'start_radio': {
+			const id = args?.id as string | undefined;
+			const name = args?.name as string | undefined;
+			if (id) {
+				const radioTracks = await ytmGetSongRadio(id);
+				if (radioTracks.length > 0) {
+					await webPlayer.playPlaylist(radioTracks, 0, id, name ? `${name} Radio` : 'Radio');
+				}
+			}
+			return undefined as unknown as T;
 		}
 
 		case 'play':

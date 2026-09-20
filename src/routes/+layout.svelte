@@ -57,6 +57,12 @@
 	let { children } = $props();
 	const tabbed = $derived(np.open && appearance.tabbedPlayer);
 
+	const pageTitle = $derived(
+		playback.now
+			? `${playback.now.title} - ${playback.now.artists || 'Unknown Artist'}`
+			: 'Nocturne Music'
+	);
+
 	// Right sidebar: only 1 right sidebar can be active at a time.
 	// Closing a sidebar cleanly closes it without resurrecting any previous sidebar.
 	type RightSidebarId = 'np' | 'queue' | 'lyrics' | 'devices';
@@ -208,7 +214,10 @@
 	onclick={handleGlobalClick}
 />
 
-<svelte:head><link rel="icon" href={favicon} /></svelte:head>
+<svelte:head>
+	<title>{pageTitle}</title>
+	<link rel="icon" href={favicon} />
+</svelte:head>
 <ModeWatcher />
 
 <!-- The mini player is the whole window when it is the window: no titlebar, no sidebar, no routes,
