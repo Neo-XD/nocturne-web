@@ -99,13 +99,19 @@ class WebAudioEngine {
 			this.audio.addEventListener('timeupdate', () => {
 				if (!this.audio) return;
 				this.position = this.audio.currentTime;
-				emitWebEvent('position', this.position);
+				emitWebEvent('position', { position: this.position });
 			});
 
 			this.audio.addEventListener('durationchange', () => {
 				if (!this.audio || !Number.isFinite(this.audio.duration)) return;
 				this.duration = this.audio.duration;
-				emitWebEvent('duration', this.duration);
+				emitWebEvent('duration', { duration: this.duration });
+			});
+
+			this.audio.addEventListener('loadedmetadata', () => {
+				if (!this.audio || !Number.isFinite(this.audio.duration)) return;
+				this.duration = this.audio.duration;
+				emitWebEvent('duration', { duration: this.duration });
 			});
 
 			this.audio.addEventListener('play', () => {
@@ -239,6 +245,20 @@ class WebAudioEngine {
 		emitWebEvent('now-playing', this.now);
 		this.updateMediaSessionMetadata(item);
 
+		// Reset position and set duration if item has duration
+		this.position = 0;
+		emitWebEvent('position', { position: 0 });
+		if (item.duration) {
+			const parts = item.duration.split(':').map(Number);
+			if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+				this.duration = parts[0] * 60 + parts[1];
+				emitWebEvent('duration', { duration: this.duration });
+			} else if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+				this.duration = parts[0] * 3600 + parts[1] * 60 + parts[2];
+				emitWebEvent('duration', { duration: this.duration });
+			}
+		}
+
 		try {
 			const streamUrl = await this.resolveAudioStreamUrl(item.video_id, this.abortController.signal);
 			if (!streamUrl) throw new Error('Could not resolve playable audio stream');
@@ -279,7 +299,7 @@ class WebAudioEngine {
 		if (!this.audio) return;
 		this.audio.currentTime = pos;
 		this.position = pos;
-		emitWebEvent('position', pos);
+		emitWebEvent('position', { position: pos });
 	}
 
 	public setVolume(vol: number): void {

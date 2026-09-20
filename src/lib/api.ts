@@ -639,9 +639,15 @@ export interface QueueIndex {
 export const onQueueIndex = (cb: (q: QueueIndex) => void): Promise<UnlistenFn> =>
 	listen<QueueIndex>('queue-index', (e) => cb(e.payload));
 export const onPosition = (cb: (p: number) => void): Promise<UnlistenFn> =>
-	listen<{ position: number }>('position', (e) => cb(e.payload.position));
+	listen<{ position?: number } | number>('position', (e) => {
+		const val = typeof e.payload === 'number' ? e.payload : (e.payload?.position ?? 0);
+		cb(val);
+	});
 export const onDuration = (cb: (d: number) => void): Promise<UnlistenFn> =>
-	listen<{ duration: number }>('duration', (e) => cb(e.payload.duration));
+	listen<{ duration?: number } | number>('duration', (e) => {
+		const val = typeof e.payload === 'number' ? e.payload : (e.payload?.duration ?? 0);
+		cb(val);
+	});
 /** Echo of every `set_volume`, so a second window's slider can't drift from what you hear. */
 export const onVolume = (cb: (v: number) => void): Promise<UnlistenFn> =>
 	listen<number>('volume', (e) => cb(e.payload));
