@@ -43,11 +43,11 @@ importers:
         specifier: ^5.2.8
         version: 5.3.0
       '@hugeicons/core-free-icons':
-        specifier: ^4.2.3
-        version: 4.3.4
+        specifier: 4.2.3
+        version: 4.2.3
       '@hugeicons/svelte':
-        specifier: ^1.1.4
-        version: 1.1.5(svelte@5.57.0)
+        specifier: 1.1.4
+        version: 1.1.4(svelte@5.57.0)
       '@internationalized/date':
         specifier: ^3.12.2
         version: 3.12.4
@@ -335,11 +335,11 @@ packages:
   '@fontsource-variable/oxanium@5.3.0':
     resolution: {integrity: sha512-oVOH5mHRMDLQsxG6h2XAOCxyD+uQL2w5zAjy1FgnAlqt183JDVGPxy9FWK7dDnhEO8huXfP6V2C3QJUj1Ac/Sw==}
 
-  '@hugeicons/core-free-icons@4.3.4':
-    resolution: {integrity: sha512-TMbzqGFD4XnEyVYut4sTzT7Wpq+Mghe7ChGd+R3bkyhJc31tcsfxtX8gmgrV3zIqn5dumsNJhvsX+h3OPjLMGQ==}
+  '@hugeicons/core-free-icons@4.2.3':
+    resolution: {integrity: sha512-fpiU0qFZkv4ABi23xJ2m4qNr0BBfuIaYjPboN8WDA6aj9D+OzXa7eykxKOpACZRuGbDz1U9S5DsNx1d5KNnsgA==}
 
-  '@hugeicons/svelte@1.1.5':
-    resolution: {integrity: sha512-aau7Z9kJWi3QtakeHeFBj+TqHl7NQBO6/BWbnBTete8On3+L/CD1iSmf4vFNs90fcpQeP+567hT4wImEMNd1Fg==}
+  '@hugeicons/svelte@1.1.4':
+    resolution: {integrity: sha512-G/oYlqhJ6DTN64/BuOPiFBz6zfAvocUHiewA7x/ktOElwKPl0NM3TAnZcvTy+DsYRH6CD03JdNYrQTu/mPFMBw==}
     peerDependencies:
       svelte: ^5.0.0
 
@@ -1508,9 +1508,9 @@ snapshots:
 
   '@fontsource-variable/oxanium@5.3.0': {}
 
-  '@hugeicons/core-free-icons@4.3.4': {}
+  '@hugeicons/core-free-icons@4.2.3': {}
 
-  '@hugeicons/svelte@1.1.5(svelte@5.57.0)':
+  '@hugeicons/svelte@1.1.4(svelte@5.57.0)':
     dependencies:
       svelte: 5.57.0
 
