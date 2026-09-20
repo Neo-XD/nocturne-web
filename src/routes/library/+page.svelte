@@ -296,22 +296,22 @@
 		{/if}
 	</div>
 
-	{#if oauthApiNotice}
+	{#if $oauthApiNotice}
 		<div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-amber-200">
 			<div class="space-y-0.5 min-w-0 flex-1">
 				<p class="font-semibold text-sm">YouTube Data API v3 Not Enabled</p>
 				<p class="text-xs text-amber-200/80 leading-relaxed">
-					{oauthApiNotice.message}
+					{$oauthApiNotice.message}
 				</p>
 			</div>
-			{#if oauthApiNotice.link}
+			{#if $oauthApiNotice.link}
 				<a
-					href={oauthApiNotice.link}
+					href={$oauthApiNotice.link}
 					target="_blank"
 					rel="noopener noreferrer"
 					class="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-black hover:bg-amber-400 transition-colors cursor-pointer"
 				>
-					<span>{oauthApiNotice.linkText || 'Enable API'}</span>
+					<span>{$oauthApiNotice.linkText || 'Enable API'}</span>
 					<HugeiconsIcon icon={ArrowRight01Icon} class="size-3.5" />
 				</a>
 			{/if}

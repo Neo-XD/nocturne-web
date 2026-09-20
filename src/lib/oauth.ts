@@ -1,5 +1,6 @@
 import type { Account, BrowseItem, PlaylistPage, SongItem } from './api';
 import { emitWebEvent } from './webEngine';
+import { writable } from 'svelte/store';
 
 export interface OAuthSession {
 	accessToken: string;
@@ -179,10 +180,10 @@ export interface OAuthApiNotice {
 	linkText?: string;
 }
 
-export let oauthApiNotice = $state<OAuthApiNotice | null>(null);
+export const oauthApiNotice = writable<OAuthApiNotice | null>(null);
 
 export function clearOAuthNotice(): void {
-	oauthApiNotice = null;
+	oauthApiNotice.set(null);
 }
 
 export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
@@ -214,18 +215,18 @@ export async function fetchOAuthUserPlaylists(): Promise<BrowseItem[]> {
 			}
 
 			if (res.status === 403) {
-				oauthApiNotice = {
+				oauthApiNotice.set({
 					type: 'warning',
 					message: 'YouTube Data API v3 is not enabled in your Google Cloud project. Enable it to sync your YouTube playlists.',
 					link: 'https://console.cloud.google.com/apis/library/youtube.googleapis.com',
 					linkText: 'Enable YouTube Data API v3'
-				};
+				});
 			}
 			return baseItems;
 		}
 
 		// Successfully retrieved playlists
-		oauthApiNotice = null;
+		oauthApiNotice.set(null);
 		const data = await res.json();
 		const items: BrowseItem[] = (data.items || []).map((p: any) => ({
 			kind: 'playlist' as const,
