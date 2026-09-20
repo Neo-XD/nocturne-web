@@ -45,10 +45,6 @@ async function postYtm(endpoint: string, body: Record<string, any>): Promise<any
 	if (cookie) {
 		headers['x-ytm-cookie'] = cookie;
 	}
-	const oauthSession = getStoredOAuthSession();
-	if (oauthSession?.accessToken) {
-		headers['x-ytm-oauth'] = oauthSession.accessToken;
-	}
 
 	const res = await fetch(`/api/ytm/${endpoint}`, {
 		method: 'POST',

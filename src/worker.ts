@@ -18,19 +18,27 @@ function extractSapisid(cookie: string): string | null {
 	return null;
 }
 
+function createTimeoutSignal(ms: number): AbortSignal | undefined {
+	if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+		return AbortSignal.timeout(ms);
+	}
+	const controller = new AbortController();
+	setTimeout(() => controller.abort(), ms);
+	return controller.signal;
+}
+
 async function resolveAudioStream(videoId: string): Promise<string | null> {
 	// 1. Try Invidious instances that resolve direct googlevideo audio streams
 	const invidiousInstances = [
-		'https://invidious.f5.si',
-		'https://invidious.nerdvpn.de',
-		'https://inv.vern.cc'
+		'https://invidious.f5.si'
 	];
 
 	for (const inst of invidiousInstances) {
 		try {
+			const signal = createTimeoutSignal(4000);
 			const invResp = await fetch(`${inst}/api/v1/videos/${encodeURIComponent(videoId)}`, {
 				headers: { Accept: 'application/json' },
-				signal: AbortSignal.timeout(3500)
+				signal
 			});
 			if (invResp.ok) {
 				const data: any = await invResp.json();
@@ -99,123 +107,144 @@ async function resolveAudioStream(videoId: string): Promise<string | null> {
 
 export default {
 	async fetch(request: Request, env: { ASSETS: Fetcher }): Promise<Response> {
-		const url = new URL(request.url);
+		try {
+			const url = new URL(request.url);
 
-		// Audio streaming proxy
-		if (url.pathname === '/api/stream') {
-			const videoId = url.searchParams.get('id');
-			if (!videoId) return new Response('Missing id', { status: 400 });
-
-			const audioUrl = await resolveAudioStream(videoId);
-			if (!audioUrl) return new Response('Audio stream not found', { status: 404 });
-
-			const forwardHeaders = new Headers();
-			const range = request.headers.get('range');
-			if (range) {
-				forwardHeaders.set('Range', range);
+			// Handle CORS preflight
+			if (request.method === 'OPTIONS') {
+				return new Response(null, {
+					headers: {
+						'Access-Control-Allow-Origin': '*',
+						'Access-Control-Allow-Headers': '*',
+						'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+					}
+				});
 			}
 
-			const streamResp = await fetch(audioUrl, {
-				headers: forwardHeaders
-			});
+			// Audio streaming proxy
+			if (url.pathname === '/api/stream') {
+				const videoId = url.searchParams.get('id');
+				if (!videoId) return new Response('Missing id', { status: 400 });
 
-			const respHeaders = new Headers();
-			respHeaders.set('Access-Control-Allow-Origin', '*');
-			respHeaders.set('Access-Control-Allow-Headers', '*');
-			respHeaders.set('Accept-Ranges', 'bytes');
-			if (streamResp.headers.has('Content-Type')) {
-				respHeaders.set('Content-Type', streamResp.headers.get('Content-Type')!);
-			} else {
-				respHeaders.set('Content-Type', 'audio/mp4');
+				const audioUrl = await resolveAudioStream(videoId);
+				if (!audioUrl) return new Response('Audio stream not found', { status: 404 });
+
+				const forwardHeaders = new Headers();
+				const range = request.headers.get('range');
+				if (range) {
+					forwardHeaders.set('Range', range);
+				}
+
+				try {
+					const streamResp = await fetch(audioUrl, {
+						headers: forwardHeaders
+					});
+
+					const respHeaders = new Headers();
+					respHeaders.set('Access-Control-Allow-Origin', '*');
+					respHeaders.set('Access-Control-Allow-Headers', '*');
+					respHeaders.set('Accept-Ranges', 'bytes');
+					if (streamResp.headers.has('Content-Type')) {
+						respHeaders.set('Content-Type', streamResp.headers.get('Content-Type')!);
+					} else {
+						respHeaders.set('Content-Type', 'audio/mp4');
+					}
+					if (streamResp.headers.has('Content-Length')) {
+						respHeaders.set('Content-Length', streamResp.headers.get('Content-Length')!);
+					}
+					if (streamResp.headers.has('Content-Range')) {
+						respHeaders.set('Content-Range', streamResp.headers.get('Content-Range')!);
+					}
+
+					if (url.searchParams.get('download') === '1') {
+						const title = url.searchParams.get('title') || 'track';
+						const cleanTitle = title.replace(/[^a-zA-Z0-9_\-\. ]/g, '_');
+						respHeaders.set('Content-Disposition', `attachment; filename="${cleanTitle}.m4a"`);
+					}
+
+					return new Response(streamResp.body, {
+						status: streamResp.status,
+						statusText: streamResp.statusText,
+						headers: respHeaders
+					});
+				} catch (err: any) {
+					return new Response(`Stream fetch failed: ${err?.message || err}`, { status: 502 });
+				}
 			}
-			if (streamResp.headers.has('Content-Length')) {
-				respHeaders.set('Content-Length', streamResp.headers.get('Content-Length')!);
-			}
-			if (streamResp.headers.has('Content-Range')) {
-				respHeaders.set('Content-Range', streamResp.headers.get('Content-Range')!);
-			}
 
-			if (url.searchParams.get('download') === '1') {
-				const title = url.searchParams.get('title') || 'track';
-				const cleanTitle = title.replace(/[^a-zA-Z0-9_\-\. ]/g, '_');
-				respHeaders.set('Content-Disposition', `attachment; filename="${cleanTitle}.m4a"`);
-			}
+			// Proxy YouTube Music InnerTube requests
+			if (url.pathname.startsWith('/api/ytm/')) {
+				const subpath = url.pathname.replace(/^\/api\/ytm\//, '');
+				const targetUrl = `https://music.youtube.com/youtubei/v1/${subpath}${url.search}`;
 
-			return new Response(streamResp.body, {
-				status: streamResp.status,
-				statusText: streamResp.statusText,
-				headers: respHeaders
-			});
-		}
+				const headers = new Headers();
+				headers.set('Content-Type', 'application/json');
+				headers.set('Origin', 'https://music.youtube.com');
+				headers.set('Referer', 'https://music.youtube.com/');
+				headers.set('X-YouTube-Client-Name', '67');
+				headers.set('X-YouTube-Client-Version', '1.20250101.01.00');
+				headers.set(
+					'User-Agent',
+					'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+				);
 
-		// Proxy YouTube Music InnerTube requests
-		if (url.pathname.startsWith('/api/ytm/')) {
-			const subpath = url.pathname.replace(/^\/api\/ytm\//, '');
-			const targetUrl = `https://music.youtube.com/youtubei/v1/${subpath}${url.search}`;
-
-			const headers = new Headers();
-			headers.set('Content-Type', 'application/json');
-			headers.set('Origin', 'https://music.youtube.com');
-			headers.set('Referer', 'https://music.youtube.com/');
-			headers.set('X-YouTube-Client-Name', '67');
-			headers.set('X-YouTube-Client-Version', '1.20250101.01.00');
-			headers.set(
-				'User-Agent',
-				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
-			);
-
-			// Forward cookie and SAPISIDHASH auth if present
-			const authCookie = request.headers.get('x-ytm-cookie');
-			if (authCookie) {
-				headers.set('Cookie', authCookie);
-				const sapisid = extractSapisid(authCookie);
-				if (sapisid) {
-					try {
-						const authHeader = await getSapisidHash(sapisid);
-						headers.set('Authorization', authHeader);
-					} catch (e) {
-						console.warn('Failed to compute SAPISIDHASH:', e);
+				// Forward cookie and SAPISIDHASH auth if present
+				const authCookie = request.headers.get('x-ytm-cookie');
+				if (authCookie) {
+					headers.set('Cookie', authCookie);
+					const sapisid = extractSapisid(authCookie);
+					if (sapisid) {
+						try {
+							const authHeader = await getSapisidHash(sapisid);
+							headers.set('Authorization', authHeader);
+						} catch (e) {
+							console.warn('Failed to compute SAPISIDHASH:', e);
+						}
 					}
 				}
-			}
 
-			// Forward Google OAuth Bearer token if present
-			const oauthToken = request.headers.get('x-ytm-oauth');
-			if (oauthToken && !headers.has('Authorization')) {
-				headers.set('Authorization', `Bearer ${oauthToken}`);
-			}
+				const init: RequestInit = {
+					method: request.method,
+					headers,
+					body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined
+				};
 
-			const init: RequestInit = {
-				method: request.method,
-				headers,
-				body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined
-			};
+				try {
+					const resp = await fetch(targetUrl, init);
+					const respHeaders = new Headers(resp.headers);
+					respHeaders.set('Access-Control-Allow-Origin', '*');
+					respHeaders.set('Access-Control-Allow-Headers', '*');
+					respHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 
-			const resp = await fetch(targetUrl, init);
-			const respHeaders = new Headers(resp.headers);
-			respHeaders.set('Access-Control-Allow-Origin', '*');
-			respHeaders.set('Access-Control-Allow-Headers', '*');
-			respHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-
-			return new Response(resp.body, {
-				status: resp.status,
-				statusText: resp.statusText,
-				headers: respHeaders
-			});
-		}
-
-		// Handle preflight
-		if (request.method === 'OPTIONS') {
-			return new Response(null, {
-				headers: {
-					'Access-Control-Allow-Origin': '*',
-					'Access-Control-Allow-Headers': '*',
-					'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+					return new Response(resp.body, {
+						status: resp.status,
+						statusText: resp.statusText,
+						headers: respHeaders
+					});
+				} catch (proxyErr: any) {
+					return new Response(JSON.stringify({ error: proxyErr?.message || 'Upstream YTM fetch failed' }), {
+						status: 502,
+						headers: {
+							'Content-Type': 'application/json',
+							'Access-Control-Allow-Origin': '*'
+						}
+					});
 				}
+			}
+
+			// Serve static assets with SPA routing fallback (rewrite 404 navigation to /index.html)
+			let assetResp = await env.ASSETS.fetch(request);
+			if (assetResp.status === 404 && !url.pathname.includes('.')) {
+				const indexUrl = new URL('/index.html', request.url);
+				assetResp = await env.ASSETS.fetch(new Request(indexUrl, request));
+			}
+			return assetResp;
+		} catch (topErr: any) {
+			console.error('Unhandled worker exception:', topErr);
+			return new Response(`Worker internal error: ${topErr?.message || topErr}`, {
+				status: 500,
+				headers: { 'Content-Type': 'text/plain' }
 			});
 		}
-
-		// Serve static assets
-		return env.ASSETS.fetch(request);
 	}
 };

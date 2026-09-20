@@ -25,10 +25,7 @@ import { openLoginModal } from './loginModal.svelte';
 
 // Invidious instances with CORS and active API support
 const INVIDIOUS_INSTANCES = [
-	'https://invidious.f5.si',
-	'https://inv.vern.cc',
-	'https://invidious.nerdvpn.de',
-	'https://vid.priv.au'
+	'https://invidious.f5.si'
 ];
 
 let currentInstanceIndex = 0;
