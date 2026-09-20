@@ -11,7 +11,7 @@ const STORAGE_KEY_SESSION = 'nocturne_oauth_session';
 const STORAGE_KEY_CLIENT_ID = 'nocturne_google_client_id';
 
 // Default Google OAuth Client ID for Nocturne Web
-const DEFAULT_CLIENT_ID = '444918660155-0fb8b8puhnsdq4201pvofl1orf1s44da.apps.googleusercontent.com';
+const DEFAULT_CLIENT_ID = '1007597393955-55ukvkhn1rklol7cng6lej66g9dtubdk.apps.googleusercontent.com';
 
 declare global {
 	interface Window {
