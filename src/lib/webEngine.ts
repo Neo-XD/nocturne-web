@@ -17,6 +17,7 @@ import {
 	ytmGetAccount,
 	setStoredCookie
 } from './ytmusic';
+import { getStoredOAuthSession, clearOAuthSession, fetchOAuthUserPlaylists } from './oauth';
 import { openLoginModal } from './loginModal.svelte';
 
 // Invidious instances with CORS and active API support
@@ -762,14 +763,18 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 			return undefined as unknown as T;
 		}
 
-		case 'get_account':
+		case 'get_account': {
+			const oauthSession = getStoredOAuthSession();
+			if (oauthSession?.account) return oauthSession.account as unknown as T;
 			return (await ytmGetAccount()) as unknown as T;
+		}
 
 		case 'login_webview':
 			openLoginModal();
 			return undefined as unknown as T;
 
 		case 'sign_out':
+			clearOAuthSession();
 			setStoredCookie(null);
 			emitWebEvent('auth-changed', { signedIn: false });
 			return undefined as unknown as T;
@@ -780,7 +785,14 @@ export async function handleWebInvoke<T>(cmd: string, args?: Record<string, any>
 		case 'get_saved_accounts':
 			return [] as unknown as T;
 
-		case 'get_library':
+		case 'get_library': {
+			const oauthSession = getStoredOAuthSession();
+			if (oauthSession) {
+				const playlists = await fetchOAuthUserPlaylists();
+				return playlists as unknown as T;
+			}
+			return [] as unknown as T;
+		}
 		case 'get_library_albums':
 		case 'get_library_artists':
 		case 'get_local_library':
